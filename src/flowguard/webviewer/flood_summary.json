@@ -1,0 +1,14 @@
+{
+ "grid": [
+  225,
+  226
+ ],
+ "cell_m": 120.0,
+ "rain_mm_hr": 40.0,
+ "rain_hours": 4.0,
+ "sim_hours": 12.0,
+ "peak_depth_m": 1.5,
+ "flooded_cells_5cm": 19594,
+ "pct_city_flooded": 38.5,
+ "drain_network_cells": 2211
+}
