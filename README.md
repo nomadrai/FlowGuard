@@ -395,14 +395,6 @@ MIT License - see LICENSE file for details
 
 ---
 
-## Authors
-
-**Aaditya Rai** - Initial development and research
-
-Project developed for Smart India Hackathon 2024 addressing urban flood management challenges in Nagpur, Maharashtra.
-
----
-
 ## Acknowledgments
 
 - Nagpur Municipal Corporation for drainage network data
