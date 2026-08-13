@@ -89,7 +89,7 @@ This is the step most likely to go wrong if rushed — go slowly.
 2. Open Arduino IDE.
 3. Go to **Tools → Board**, confirm your ESP32 board type is selected (should already be set from your earlier setup).
 4. Go to **Tools → Port**, select the port for your ESP32.
-5. Open the file `flowguard_hcsr04.ino` (provided earlier).
+5. Open the file `firmware/flowguard_hcsr04/flowguard_hcsr04.ino` from the project repo.
 6. Find this line near the top:
    ```
    const float SENSOR_MOUNT_HEIGHT_CM = 20.0;

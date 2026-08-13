@@ -70,7 +70,7 @@ Adds three layers on top of the Basic Version's physics core:
 
 | File | What it does | Status |
 |---|---|---|
-| flowguard_hcsr04.ino | ESP32 firmware, reads HC-SR04 ultrasonic sensor, converts to water level, streams CSV over Serial | Built and tested |
+| firmware/flowguard_hcsr04/flowguard_hcsr04.ino | ESP32 firmware, reads HC-SR04 ultrasonic sensor, converts to water level, streams CSV over Serial | Built and tested |
 | blockage_detector.py | Core physics (Cd calibration, orifice equation, blockage % calculation) plus ML confirmation layer (Isolation Forest) plus trend forecasting (days-to-critical) | Built and tested, includes self-tests, one bug found and fixed (ML layer needed more training samples for a stable decision boundary) |
 | network_simulation.py | Muskingum flood routing across a simulated Ambazari Lake to Nag River network | Built and tested, verified textbook-correct behavior (downstream peaks arrive later and lower) |
 | storage.py | SQLite audit trail, 4 tables: calibration_log, blockage_readings, blockage_events, network_simulation_runs | Built and tested end-to-end |

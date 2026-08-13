@@ -10,10 +10,11 @@ import sys
 import folium
 from flask import Flask, render_template
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(ROOT)))
+sys.path.insert(0, os.path.join(_PROJECT_ROOT, "scripts"))
 from hydro import CITY_BBOX  # noqa: E402
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
 PARENT = os.path.dirname(ROOT) + "/nagpur_drainage_data"
 
 app = Flask(__name__)
