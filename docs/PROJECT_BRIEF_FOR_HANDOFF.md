@@ -70,16 +70,14 @@ Adds three layers on top of the Basic Version's physics core:
 
 | File | What it does | Status |
 |---|---|---|
-| firmware/flowguard_hcsr04/flowguard_hcsr04.ino | ESP32 firmware, reads HC-SR04 ultrasonic sensor, converts to water level, streams CSV over Serial | Built and tested |
-| blockage_detector.py | Core physics (Cd calibration, orifice equation, blockage % calculation) plus ML confirmation layer (Isolation Forest) plus trend forecasting (days-to-critical) | Built and tested, includes self-tests, one bug found and fixed (ML layer needed more training samples for a stable decision boundary) |
+| firmware/flowguard_hcsr04/flowguard_hcsr04.ino | ESP32 firmware, reads HC-SR04 ultrasonic sensor above rectangular inlet box (308 cm²), converts to water level, streams CSV over Serial. Pipe geometry (⌀ 1.90 cm, area 2.8353 cm²) hardcoded as constants. | Built and tested |
+| blockage_detector.py | Core physics (Cd calibration, orifice equation, blockage % calculation) plus ML confirmation layer (Isolation Forest) plus trend forecasting (days-to-critical). Pipe area (2.8353 cm²) and inlet box area (308 cm²) defined as module-level constants. | Built and tested, includes self-tests, one bug found and fixed (ML layer needed more training samples for a stable decision boundary) |
 | network_simulation.py | Muskingum flood routing across a simulated Ambazari Lake to Nag River network | Built and tested, verified textbook-correct behavior (downstream peaks arrive later and lower) |
 | storage.py | SQLite audit trail, 4 tables: calibration_log, blockage_readings, blockage_events, network_simulation_runs | Built and tested end-to-end |
-| flowguard_dashboard.py | Streamlit dashboard tying everything together: calibration input, live readings, ML confirmation display, network simulation chart, audit trail viewer | Built, verified starts with no errors |
+| flowguard_dashboard.py | Streamlit dashboard tying everything together: rainfall inflow rate config (sidebar, set once per session), calibration input, live water-height readings, ML confirmation display, network simulation chart, audit trail viewer | Built, verified starts with no errors |
 | PS_AND_SOLUTION.md | Problem statement, solution, and unique approach, written for mentor/team | Complete |
 | COMPLETE_BUILD_STEPS.md | Software build guide, continuing from a working sensor to the full ML plus network system | Complete |
-| FLOWGUARD_BEGINNER_GUIDE.md | Zero-experience beginner's guide, problem explained simply, first physical sensor setup | Complete |
 | FULL_HARDWARE_BUILD.md | Complete 17-step hardware build, every wiring connection, calibration experiment, obstruction prep, demo rehearsal | Complete |
-| FLOWGUARD_BUILD_GUIDE.md | Earlier draft build guide, superseded by the files above, kept for reference | Superseded |
 
 Everything above has been actually run and tested, not just written. The physics self-tests, the network routing self-tests, and the storage layer were all executed and their outputs verified correct before being handed over.
 

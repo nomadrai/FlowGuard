@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from blockage_detector import (
+    PIPE_AREA_CM2, INLET_BOX_BASE_AREA_CM2,
     calibrate_cd, calculate_area, blockage_percent,
     extract_window_features, BlockageAnomalyDetector, forecast_days_to_critical,
 )
@@ -72,14 +73,43 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================
-# SIDEBAR — calibration input (do this once per physical channel)
+# SIDEBAR — system config (inflow rate) + calibration
 # ============================================================
+st.sidebar.header("System Configuration")
+st.sidebar.caption(
+    "Set the rainfall inflow rate **once before each monitoring session**, "
+    "then submit individual water-height readings below."
+)
+inflow_ml_s = st.sidebar.number_input(
+    "Rainfall inflow rate (mL/s)",
+    value=20.0,
+    min_value=0.1,
+    help=(
+        "How much water is entering the inlet box per second (rainfall rate). "
+        "Measure this with a measuring jug: pour a known volume at a steady "
+        "rate, time it, then compute volume ÷ time. 1 mL = 1 cm³."
+    ),
+)
+# Convert mL/s → cm³/s (they are equal by definition; label is clearer in mL/s)
+inflow_q_cm3s = inflow_ml_s  # 1 mL == 1 cm³
+
+st.sidebar.markdown("---")
+st.sidebar.caption(
+    f"**Hardware geometry (fixed):**  \n"
+    f"Drainage pipe: ⌀ 1.90 cm, area = {PIPE_AREA_CM2:.4f} cm²  \n"
+    f"Inlet box base: {INLET_BOX_BASE_AREA_CM2:.0f} cm²"
+)
+st.sidebar.markdown("---")
 st.sidebar.header("Calibration")
-st.sidebar.caption("Run once, using a clean (unblocked) test pour on your real channel.")
-pour_volume = st.sidebar.number_input("Pour volume (mL)", value=500.0, min_value=1.0)
+st.sidebar.caption("Run once per physical channel using a clean (unblocked) test pour.")
+pour_volume = st.sidebar.number_input("Pour volume (mL)", value=200.0, min_value=1.0)
 pour_time = st.sidebar.number_input("Pour time (sec)", value=10.0, min_value=0.1)
-steady_h = st.sidebar.number_input("Steady water height (cm)", value=3.0, min_value=0.1)
-a_clean = st.sidebar.number_input("Known clean channel area (cm²)", value=12.0, min_value=0.1)
+steady_h = st.sidebar.number_input("Steady water height (cm)", value=2.0, min_value=0.1)
+# Clean area is fixed by the pipe geometry — show it read-only for transparency
+a_clean = PIPE_AREA_CM2
+st.sidebar.markdown(
+    f"Known clean pipe area (cm²): **{a_clean:.4f}** *(pipe ⌀ 1.90 cm, auto-set)*"
+)
 
 if st.sidebar.button("Calibrate Cd"):
     cd_val = calibrate_cd(pour_volume, pour_time, steady_h, a_clean)
@@ -98,18 +128,22 @@ st.markdown('<div class="fg-section-label">Physical Node — Live Blockage Detec
 st.markdown('<div class="fg-section-sub">Orifice equation (Bernoulli-derived) converts live water height into calculated channel area</div>', unsafe_allow_html=True)
 
 if cd_active is None:
-    st.markdown('<div class="fg-note">⚠️ Calibrate Cd in the sidebar first, using a clean test pour on your real channel.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="fg-note">⚠️ Set the inflow rate and calibrate Cd in the sidebar first, then submit readings here.</div>', unsafe_allow_html=True)
 else:
     col1, col2 = st.columns([1, 2])
     with col1:
-        st.markdown("**Enter a live reading** (from Serial Monitor, or type manually for testing)")
-        live_q = st.number_input("Current inflow Q (cm³/s)", value=50.0, key="live_q")
-        live_h = st.number_input("Current water height h (cm)", value=3.0, key="live_h")
+        st.markdown(
+            f"**Enter a live reading** from Serial Monitor  \n"
+            f"*(inflow rate: {inflow_ml_s:.1f} mL/s — change in sidebar if needed)*"
+        )
+        live_h = st.number_input("Current water height h (cm)", value=2.0, key="live_h",
+                                  help="Read the water_level_cm column from the ESP32 Serial Monitor output.")
 
         if st.button("Submit reading"):
-            area = calculate_area(live_q, cd_active, live_h)
+            # inflow Q comes from the sidebar — not entered per-reading
+            area = calculate_area(inflow_q_cm3s, cd_active, live_h)
             pct = blockage_percent(area, a_clean_active)
-            log_reading("Physical_Node_1", live_h, live_q, area, pct)
+            log_reading("Physical_Node_1", live_h, inflow_q_cm3s, area, pct)
 
             # Rolling window ML confirmation
             history = get_readings("Physical_Node_1")
@@ -153,7 +187,8 @@ else:
                     <div class="lbl">Blockage estimate</div>
                 </div>
                 <div style="font-size:0.8rem; color:var(--text-mid);">
-                    Calculated area: {last['area']:.2f} cm² (clean = {a_clean_active:.1f} cm²)<br>
+                    Calculated area: {last['area']:.4f} cm² (clean pipe = {a_clean_active:.4f} cm²)<br>
+                    Inflow used: {inflow_ml_s:.1f} mL/s (set in sidebar)<br>
                     ML confirmation: {ml_text}<br>
                     Trend forecast: {forecast_text}
                 </div>

@@ -20,7 +20,7 @@ We use the **orifice equation**, derived from Bernoulli's principle — a standa
 Q = Cd × A × √(2gh)
 ```
 
-We know how much water is flowing in (Q). We measure how high the water gets (h). We solve backward for the channel's **real, current open area (A)**. If that calculated area is smaller than the drain's known clean opening — that gap **is** the blockage, quantified as a percentage, from data alone, without anyone inspecting anything physically.
+We know how much water is flowing in (Q — entered as the rainfall inflow rate in mL/s in the dashboard sidebar before a monitoring session begins). We measure how high the water gets in the rectangular inlet box (h — read from the ESP32 Serial Monitor). We solve backward for the drainage pipe's **real, current open area (A)**. The clean pipe is round, diameter **1.90 cm**, giving a known clean area of **π × (0.95)² ≈ 2.8353 cm²**. The inlet box (base area **308 cm²**) provides the water column above the pipe exit. If the calculated A is smaller than the pipe's known clean area — that gap **is** the blockage, quantified as a percentage, from data alone, without anyone inspecting anything physically.
 
 ### Three layers of depth, not just one sensor
 

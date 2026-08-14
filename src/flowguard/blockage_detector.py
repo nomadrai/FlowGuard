@@ -17,10 +17,22 @@ Three layers, stacked:
 Usage as a library — see test block at bottom for a runnable example.
 """
 
+import math
+
 import numpy as np
 from sklearn.ensemble import IsolationForest
 
 G_CM_S2 = 981.0  # gravity, cm/s^2 (centimeter units throughout this module)
+
+# ------------------------------------------------------------------
+# PHYSICAL CONSTANTS — derived from the deployed hardware geometry
+# ------------------------------------------------------------------
+# Round drainage pipe: diameter 1.90 cm → A = π × (d/2)²
+PIPE_DIAMETER_CM: float = 1.90
+PIPE_AREA_CM2: float = math.pi * (PIPE_DIAMETER_CM / 2) ** 2  # ≈ 2.8353 cm²
+
+# Rectangular inlet box (where rainfall water collects above the pipe)
+INLET_BOX_BASE_AREA_CM2: float = 308.0  # cm²
 
 
 # ------------------------------------------------------------------
@@ -155,23 +167,29 @@ def forecast_days_to_critical(blockage_pct_history, timestamps_days, critical_th
 # you plug in real sensor readings.
 # ------------------------------------------------------------------
 if __name__ == "__main__":
-    print("=== Testing calibration ===")
-    # Example: poured 500 mL in 10 sec, steady height 3 cm, clean area 12 cm^2
-    cd = calibrate_cd(pour_volume_ml=500, pour_time_sec=10, steady_h_cm=3.0, a_clean_cm2=12.0)
+    print(f"=== Hardware geometry ===")
+    print(f"Drainage pipe diameter : {PIPE_DIAMETER_CM:.2f} cm")
+    print(f"Drainage pipe area     : {PIPE_AREA_CM2:.4f} cm^2  (= pi × (d/2)^2)")
+    print(f"Inlet box base area    : {INLET_BOX_BASE_AREA_CM2:.1f} cm^2")
+
+    print("\n=== Testing calibration ===")
+    # Example: pour 200 mL in 10 s, steady height 2 cm, clean area = PIPE_AREA_CM2
+    # (using the real pipe area so self-test is grounded in the actual hardware)
+    cd = calibrate_cd(pour_volume_ml=200, pour_time_sec=10, steady_h_cm=2.0, a_clean_cm2=PIPE_AREA_CM2)
     print(f"Calibrated Cd: {cd:.4f}")
 
-    print("\n=== Testing clean-channel detection (should show ~0% blocked) ===")
-    q_test = 500 / 10  # same pour rate as calibration
-    a_calc = calculate_area(q_test, cd, h_cm=3.0)
-    pct = blockage_percent(a_calc, a_clean_cm2=12.0)
-    print(f"Calculated area: {a_calc:.2f} cm^2 (expected ~12.0), blockage: {pct:.1f}%")
+    print("\n=== Testing clean-pipe detection (should show ~0% blocked) ===")
+    q_test = 200 / 10  # same pour rate as calibration
+    a_calc = calculate_area(q_test, cd, h_cm=2.0)
+    pct = blockage_percent(a_calc, a_clean_cm2=PIPE_AREA_CM2)
+    print(f"Calculated area: {a_calc:.4f} cm^2 (expected ~{PIPE_AREA_CM2:.4f}), blockage: {pct:.1f}%")
 
-    print("\n=== Testing blocked-channel detection (same pour, higher water level) ===")
-    # If channel is blocked, same inflow causes water to rise HIGHER before
-    # escaping — simulate that: height rises to 5cm instead of 3cm for the same Q
-    a_calc_blocked = calculate_area(q_test, cd, h_cm=5.0)
-    pct_blocked = blockage_percent(a_calc_blocked, a_clean_cm2=12.0)
-    print(f"Calculated area: {a_calc_blocked:.2f} cm^2, blockage: {pct_blocked:.1f}%")
+    print("\n=== Testing blocked-pipe detection (same inflow, higher water level) ===")
+    # A blockage causes the same inflow to back up to a higher water level.
+    # Simulate: height rises to 4 cm instead of 2 cm for the same Q.
+    a_calc_blocked = calculate_area(q_test, cd, h_cm=4.0)
+    pct_blocked = blockage_percent(a_calc_blocked, a_clean_cm2=PIPE_AREA_CM2)
+    print(f"Calculated area: {a_calc_blocked:.4f} cm^2, blockage: {pct_blocked:.1f}%")
 
     print("\n=== Testing ML confirmation layer ===")
     # Simulate a proper-sized clean-baseline set (small noise around 0% blockage).

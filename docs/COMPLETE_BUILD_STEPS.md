@@ -50,14 +50,12 @@ This builds a small Ambazari Lake → Nag River network and simulates a rainfall
 
 ## Step 5 — Calibrate Cd on your REAL physical channel
 
-Do the jug-pour experiment from earlier:
-1. Measure a known volume of water (e.g. 500 mL).
-2. Time how long it takes to pour it into your channel at a steady rate.
+Do the jug-pour experiment:
+1. Measure a known volume of water (e.g. 200 mL).
+2. Time how long it takes to pour it into the inlet box at a steady rate.
 3. Read the steady-state water height your sensor shows once it stabilizes.
-4. Measure your channel's known clean cross-sectional area with a ruler (width × depth of the opening).
+4. The clean pipe area is **fixed** — round pipe, diameter 1.90 cm → area = π × (0.95)² ≈ **2.8353 cm²**. You do not need to measure this; it is pre-set in the code.
 5. Repeat 3 times, note all 3 sets of numbers.
-
-Write down your 4 numbers (average across your 3 trials): pour volume, pour time, steady height, clean area.
 
 ---
 
@@ -68,21 +66,22 @@ streamlit run flowguard_dashboard.py
 ```
 
 In the sidebar:
-1. Enter your 4 calibration numbers from Step 5.
-2. Click **"Calibrate Cd"** — you should see your calculated Cd value appear.
+1. **Set the rainfall inflow rate (mL/s)** — this is how fast water enters the inlet box (your simulated rain). Measure it the same way as calibration: volume ÷ time. Enter it once; it applies to every reading you submit in this session.
+2. Enter your 3 calibration numbers from Step 5 (pour volume, pour time, steady height). The clean pipe area is pre-filled as **2.8353 cm²** (round pipe, ⌀ 1.90 cm) — do not change it.
+3. Click **"Calibrate Cd"** — you should see your calculated Cd value appear.
 
 ---
 
 ## Step 7 — Feed in real readings
 
 For each live reading from your Serial Monitor:
-1. Note the current inflow rate (how fast you're pouring — measure this the same way as calibration: volume ÷ time)
-2. Note the current water height reading from Serial Monitor
-3. Enter both numbers in the dashboard's "Physical Node" section, click **"Submit reading"**
+1. Check the inflow rate in the sidebar is still correct (same rate you're currently pouring).
+2. Read the `water_level_cm` value from the Serial Monitor CSV line.
+3. Enter that height in the dashboard's "Physical Node" section → "Current water height h (cm)", then click **"Submit reading"**. The inflow rate is taken from the sidebar — you only enter the height per reading.
 
 Do this multiple times:
-- A few times with a **clean channel** (varying your pour rate a little each time) — this builds your baseline
-- Then insert your **sponge obstruction**, pour again, and submit more readings
+- A few times with a **clean inlet box** (varying your pour rate slightly each time, updating the sidebar value each time you change it) — this builds your baseline.
+- Then insert your **sponge obstruction** in front of the drainage pipe, pour again at the same rate, and submit more readings.
 
 ✅ Checkpoint: after ~15-20 total readings (mix of clean and blocked), the dashboard should show a rising blockage % once you're pouring through the obstruction, and after enough readings accumulate, the ML confirmation should start correctly flagging the blocked readings as "ML-CONFIRMED" rather than just a single noisy point.
 

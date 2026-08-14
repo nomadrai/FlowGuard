@@ -87,16 +87,22 @@ This is the step most likely to go wrong if rushed — go slowly.
 
 1. Connect the ESP32 to your laptop with the USB cable.
 2. Open Arduino IDE.
-3. Go to **Tools → Board**, confirm your ESP32 board type is selected (should already be set from your earlier setup).
+3. Go to **Tools → Board**, confirm your ESP32 board type is selected.
 4. Go to **Tools → Port**, select the port for your ESP32.
 5. Open the file `firmware/flowguard_hcsr04/flowguard_hcsr04.ino` from the project repo.
-6. Find this line near the top:
+5. The sensor mount height is already set in the firmware — **`SENSOR_MOUNT_HEIGHT_CM = 13.53`** (sensor face to box base = 13.53 cm). Verify this looks correct in the code:
+   ```cpp
+   const float SENSOR_MOUNT_HEIGHT_CM = 13.53;
    ```
-   const float SENSOR_MOUNT_HEIGHT_CM = 20.0;
+   If for any reason your physical setup differs, update this value and re-upload.
+7. Note the hardware geometry constants already set in the firmware (do NOT change these — they match the physical build):
+   ```cpp
+   const float INLET_BOX_BASE_AREA_CM2 = 308.0;  // rectangular inlet box, cm²
+   const float PIPE_DIAMETER_CM  = 1.90;           // round drainage pipe, cm
+   const float PIPE_AREA_CM2     = 2.8353;         // = pi × (1.90/2)²
    ```
-   Leave it at any value for now — you'll fix this precisely in Step 9.
-7. Click the Upload button (arrow icon, top left).
-8. Wait for "Done uploading" message at the bottom.
+8. Click the Upload button (arrow icon, top left).
+9. Wait for "Done uploading" message at the bottom.
 
 ✅ Checkpoint: upload completes with no red error text.
 
@@ -129,13 +135,19 @@ This is the step most likely to go wrong if rushed — go slowly.
 
 ---
 
-## STEP 10 — Measure the channel's clean cross-sectional area
+## STEP 10 — Note the drainage pipe area (no measurement needed)
 
-1. Using your ruler, measure the **width** of the channel opening at the point where you'll later insert the sponge obstruction, in centimeters.
-2. Measure the **depth** of the channel opening at that same point, in centimeters.
-3. Multiply: Area = width × depth. Write this number down (this is your `a_clean_cm2`).
+The drainage pipe is a **round pipe, diameter 1.90 cm**. Its clean cross-sectional area is fixed by geometry:
 
-✅ Checkpoint: you have a written-down area number, e.g., "4 cm × 3 cm = 12 cm²".
+```
+A = π × (d/2)² = π × (1.90/2)² = π × 0.9025 ≈ 2.8353 cm²
+```
+
+This value is already hardcoded in both the firmware (`PIPE_AREA_CM2 = 2.8353`) and the Python code (`PIPE_AREA_CM2` in `blockage_detector.py`). You do **not** need to measure or enter it anywhere.
+
+The **inlet box** (rectangular, base area 308 cm²) is also fixed. Its area is used for context only — the orifice equation uses the pipe area.
+
+✅ Checkpoint: no ruler measurement needed here. The system already knows the pipe geometry.
 
 ---
 
@@ -153,13 +165,13 @@ This is the step most likely to go wrong if rushed — go slowly.
 
 Do this 3 separate times, writing down all numbers each time:
 
-1. Fill your measuring jug with a known volume — e.g., 500 mL. Write it down.
-2. Start a stopwatch (phone works). Pour the entire 500 mL into the channel at a steady, even pace. Stop the stopwatch the moment you finish pouring. Write down the time in seconds.
+1. Fill your measuring jug with a known volume — e.g., 200 mL. Write it down.
+2. Start a stopwatch (phone works). Pour the entire 200 mL into the inlet box at a steady, even pace. Stop the stopwatch the moment you finish pouring. Write down the time in seconds.
 3. Right as the water level stabilizes (stops rising), read and write down the `water_level_cm` value from Serial Monitor.
-4. Empty the channel completely before the next trial.
+4. Empty the inlet box completely before the next trial.
 5. Repeat this entire process 2 more times (3 trials total).
 
-✅ Checkpoint: you have 3 complete sets of (volume, time, steady height) numbers written down, plus your channel area from Step 10.
+✅ Checkpoint: you have 3 complete sets of (volume, time, steady height) numbers written down. The clean pipe area (2.8353 cm²) is already in the code — you do not need to add it.
 
 ---
 
@@ -170,12 +182,12 @@ Do this 3 separate times, writing down all numbers each time:
    ```
    python
    ```
-3. Type:
+3. Type (replace numbers with your actual Trial 1 measurements):
    ```python
-   from blockage_detector import calibrate_cd
-   cd1 = calibrate_cd(pour_volume_ml=500, pour_time_sec=10, steady_h_cm=3.0, a_clean_cm2=12.0)
+   from blockage_detector import calibrate_cd, PIPE_AREA_CM2
+   cd1 = calibrate_cd(pour_volume_ml=200, pour_time_sec=10, steady_h_cm=2.0, a_clean_cm2=PIPE_AREA_CM2)
+   print(f"Trial 1 Cd: {cd1:.4f}")
    ```
-   (replace the numbers with your actual Trial 1 numbers and your area from Step 10)
 4. Repeat for Trials 2 and 3, then average the three Cd values by hand (add them, divide by 3).
 5. Type `exit()` to leave Python.
 
@@ -185,8 +197,8 @@ Do this 3 separate times, writing down all numbers each time:
 
 ## STEP 14 — Prepare your obstruction for the live demo
 
-1. Cut or shape your sponge/foam block so it fits snugly into the channel at the point where you measured area in Step 10 — it should visibly reduce the opening when inserted, but be easy to insert/remove quickly by hand during your demo.
-2. Test: with the obstruction inserted, pour water at roughly the same rate as your calibration trials, and confirm `water_level_cm` rises **higher** than it did during your clean calibration trials for a similar pour. This proves your obstruction actually restricts flow enough to be detectable.
+1. Cut or shape your sponge/foam block so it fits snugly in front of the drainage pipe opening (diameter 1.90 cm) — it should visibly reduce the 2.8353 cm² opening when inserted, but be easy to insert/remove quickly by hand during your demo.
+2. Test: with the obstruction inserted, pour water at roughly the same rate as your calibration trials, and confirm `water_level_cm` rises **higher** than it did during your clean calibration trials for the same pour. This proves your obstruction actually restricts flow enough to be detectable.
 
 ✅ Checkpoint: obstruction visibly changes water behavior when inserted.
 
@@ -198,7 +210,9 @@ Do this 3 separate times, writing down all numbers each time:
    ```
    streamlit run flowguard_dashboard.py
    ```
-2. In the sidebar, enter your Step 12 numbers (use your Trial 1 numbers, or the averages) and your Step 10 area.
+2. In the sidebar:
+   - **Set the rainfall inflow rate (mL/s)** to the rate you poured during calibration (volume ÷ time, e.g. 200 mL ÷ 10 s = 20.0 mL/s).
+   - Enter your Step 12 calibration numbers (pour volume, pour time, steady height). The clean pipe area is pre-filled as **2.8353 cm²** — leave it unchanged.
 3. Click **"Calibrate Cd"** — confirm it shows a Cd value close to what you calculated by hand in Step 13.
 
 ✅ Checkpoint: dashboard's calculated Cd matches your manual calculation from Step 13.
@@ -207,9 +221,12 @@ Do this 3 separate times, writing down all numbers each time:
 
 ## STEP 16 — Build up baseline readings before your demo
 
-1. With the clean channel, pour water at varying rates 5-6 times, entering the inflow rate (volume ÷ time) and resulting water height into the dashboard's "Physical Node" section each time, clicking **Submit reading** after each.
-2. Insert the obstruction, pour again 5-6 times the same way, submitting each reading.
-3. Aim for at least 15-20 total submitted readings before judging, so the ML confirmation layer has enough history to work correctly live (fewer than that, and it won't have learned what "normal" looks like yet).
+1. With the clean inlet box, pour water at varying rates 5-6 times. For each pour:
+   - Update the **inflow rate (mL/s)** in the sidebar to match your current pour rate (volume ÷ time).
+   - Read `water_level_cm` from Serial Monitor.
+   - Enter only the height in the dashboard's "Physical Node" section and click **Submit reading**.
+2. Insert the obstruction in front of the pipe opening, pour again 5-6 times the same way, submitting each reading.
+3. Aim for at least 15-20 total submitted readings before judging.
 
 ✅ Checkpoint: Audit Trail's `blockage_readings` tab shows 15+ logged readings, mix of clean and blocked.
 

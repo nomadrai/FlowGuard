@@ -31,21 +31,25 @@ Q = Cd × A × √(2gh)
 ```
 
 Where:
-- Q = flow rate (m³/s)
+- Q = flow rate (cm³/s) — rainfall inflow rate, entered in dashboard sidebar (mL/s; 1 mL = 1 cm³)
 - Cd = discharge coefficient (dimensionless, field-calibrated)
-- A = cross-sectional area (m²)
-- g = gravity (9.81 m/s²)
-- h = water height (m)
+- A = drainage pipe cross-sectional area (cm²) — **fixed: π × (1.90/2)² ≈ 2.8353 cm²**
+- g = gravity (981 cm/s²)
+- h = water height in inlet box (cm) — measured live by HC-SR04
+
+**Hardware geometry (hardcoded constants):**
+- Drainage pipe: round, diameter **1.90 cm**, area **2.8353 cm²** (`PIPE_AREA_CM2` in `blockage_detector.py`)
+- Inlet box: rectangular, base area **308 cm²** (`INLET_BOX_BASE_AREA_CM2` in `blockage_detector.py`)
 
 **Key insight:** Field calibration of Cd eliminates assumptions about viscosity, channel roughness, and turbulence. The system learns the real-world behavior of each specific drainage point.
 
 ### Blockage Detection Logic
 
-1. **Expected flow (clean channel):** Q_expected = Cd × A × √(2gh)
-2. **Observed flow (current reading):** Q_observed = measured inflow
+1. **Expected flow (clean pipe):** Q_expected = Cd × A_pipe × √(2gh), where A_pipe = 2.8353 cm²
+2. **Observed flow (current reading):** Q_observed = inflow rate entered in dashboard sidebar (mL/s)
 3. **Blockage percentage:** (Q_expected - Q_observed) / Q_expected × 100%
 
-Higher water height with same inflow → obstruction reducing effective area → blockage detected.
+Higher water height with same inflow → obstruction reducing effective pipe area → blockage detected.
 
 ### ML Confirmation Layer
 
@@ -91,6 +95,9 @@ Where:
 
 ```
 FlowGuard/
+├── firmware/
+│   └── flowguard_hcsr04/
+│       └── flowguard_hcsr04.ino    # ESP32 firmware: HC-SR04 → CSV over Serial
 ├── src/
 │   └── flowguard/                  # Main Python package
 │       ├── __init__.py
@@ -335,9 +342,9 @@ def compute_blockage_pct(cd: float, clean_area: float, height: float, inflow: fl
     
     Args:
         cd: Discharge coefficient (dimensionless, field-calibrated)
-        clean_area: Clean channel cross-section (m²)
-        height: Water height (m)
-        inflow: Observed inflow rate (m³/s)
+        clean_area: Clean pipe cross-section (cm²) — use PIPE_AREA_CM2 = 2.8353 cm²
+        height: Water height in inlet box (cm)
+        inflow: Observed inflow rate (cm³/s) — entered as mL/s in dashboard sidebar
     
     Returns:
         Blockage percentage (0-100+)

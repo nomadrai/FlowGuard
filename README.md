@@ -205,32 +205,38 @@ python src/flowguard/webviewer/app.py
 
 ## Usage
 
+### Hardware Setup
+
+**Physical geometry (fixed — do not change these values):**
+- Drainage pipe: round, diameter **1.90 cm** → clean area = π × (0.95)² ≈ **2.8353 cm²**
+- Inlet box: rectangular, base area **308 cm²** (water collects here above the pipe exit)
+
 ### Hardware Calibration
 
-1. **Measure your drainage channel:**
-   - Width and depth of clean channel opening
-   - Note cross-sectional area (m²)
+1. **No area measurement needed** — the clean pipe area (2.8353 cm²) is pre-set in code.
 
 2. **Perform calibration pour:**
-   - Pour known volume of water (e.g., 500 mL)
+   - Pour a known volume (e.g., 200 mL) into the inlet box at a steady rate
    - Time the pour duration
-   - Record steady-state water height from sensor
+   - Record steady-state water height from the sensor
    - Repeat 3 times for accuracy
 
-3. **Calculate Cd in dashboard:**
-   - Enter: pour volume, pour time, steady height, channel area
+3. **Set inflow rate and calculate Cd in the dashboard:**
+   - Enter the **rainfall inflow rate (mL/s)** in the sidebar — this is your pour rate (volume ÷ time). Set this once per session before submitting any readings.
+   - Enter: pour volume, pour time, steady height (clean pipe area is auto-filled)
    - Click "Calibrate Cd"
    - System calculates your channel's discharge coefficient
 
 ### Real-time Monitoring
 
-1. **Establish baseline (clean channel):**
-   - Submit 10-15 readings with clean channel
-   - Vary inflow rate slightly for robust baseline
+1. **Establish baseline (clean pipe):**
+   - Set inflow rate in sidebar to match your current rainfall/pour rate
+   - Submit 10-15 readings with clean (unblocked) pipe
+   - Only enter water height per reading — inflow Q comes from the sidebar
 
 2. **Monitor for blockages:**
-   - Continue submitting readings during operation
-   - System calculates blockage % for each reading
+   - Continue submitting water-height readings during operation
+   - System calculates blockage % using sidebar inflow rate each time
    - ML layer confirms genuine blockage trends
 
 3. **Respond to alerts:**
