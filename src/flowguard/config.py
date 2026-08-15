@@ -60,6 +60,10 @@ RESIDUAL_WINDOW_SIZE = 20            # rolling window for residual statistics
 # (large positive) while the sensor reads near-zero depth — HC-SR04 noise
 # easily exceeds the enter threshold, causing false blockage on a dry channel.
 MIN_VALID_HEAD_M = 3.0e-3            # 3 mm minimum hydraulic head to activate state machine
+# Minimum physically valid sensor distance (m): sensor can't read closer than
+# SENSOR_TO_BOTTOM_M - CONTAINER_HEIGHT_M (full container).  HC-SR04 spurious
+# short echoes (2-7 cm) below this would appear as impossibly deep water.
+SENSOR_MIN_DIST_M = SENSOR_TO_BOTTOM_M - CONTAINER_HEIGHT_M  # ≈ 0.0633 m
 
 # ------------------------------------------------------------------
 # SERIAL CONNECTION

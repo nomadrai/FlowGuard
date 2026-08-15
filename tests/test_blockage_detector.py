@@ -207,9 +207,10 @@ def test_invalid_sensor_distance_rejected():
 
 
 def test_zero_sensor_distance_edge():
+    # distance=0 means the sensor face is touching the water surface — container
+    # would be impossibly overfull.  Now correctly rejected as spurious echo.
     depth = sensor_distance_to_water_depth(0.0)
-    assert depth is not None
-    assert abs(depth - SENSOR_TO_BOTTOM_M) < 1e-9
+    assert depth is None
 
 
 # ---------------------------------------------------------------------------
