@@ -87,8 +87,10 @@ def main():
 
         t_ms, distance_cm, water_level_cm = parsed
 
-        # Convert sensor distance from cm → m for the physics engine
-        distance_m = distance_cm / 100.0
+        # The firmware already converted distance → water depth (water_level_cm).
+        # Back-compute the sensor distance the physics engine expects so there
+        # is no dependency on the firmware's SENSOR_MOUNT_HEIGHT_CM constant.
+        sensor_dist_m = SENSOR_TO_BOTTOM_M - (water_level_cm / 100.0)
 
         # Estimate dt; default 1 s if we can't compute it
         dt_s = (t_ms - prev_t_ms) / 1000.0 if prev_t_ms is not None else 1.0
@@ -96,7 +98,7 @@ def main():
             dt_s = 1.0
         prev_t_ms = t_ms
 
-        reading, current_state = process_reading(det, distance_m, dt_s)
+        reading, current_state = process_reading(det, sensor_dist_m, dt_s)
 
         if reading is None:
             print(f"[t={t_ms:.0f}ms] INVALID reading (distance={distance_cm:.2f}cm) — skipped")
