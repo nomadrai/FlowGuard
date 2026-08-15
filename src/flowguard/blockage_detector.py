@@ -51,7 +51,6 @@ from config import (
     MIN_CLEARING_DURATION,
     RESIDUAL_WINDOW_SIZE,
     MIN_VALID_HEAD_M,
-    SENSOR_MIN_DIST_M,
     # legacy cm aliases kept for UI compatibility
     PIPE_DIAMETER_CM,
     PIPE_AREA_CM2,
@@ -71,8 +70,6 @@ def sensor_distance_to_water_depth(sensor_distance_m: float) -> Optional[float]:
     """
     if sensor_distance_m < 0 or sensor_distance_m > SENSOR_TO_BOTTOM_M:
         return None   # impossible — reject as bad sensor reading
-    if sensor_distance_m < SENSOR_MIN_DIST_M:
-        return None   # spurious HC-SR04 short echo — container can't be this full
     return SENSOR_TO_BOTTOM_M - sensor_distance_m
 
 
