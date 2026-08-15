@@ -3,56 +3,64 @@ config.py — SINGLE SOURCE OF TRUTH for every physical constant used across
 FlowGuard. Every other file imports from here instead of hardcoding its own
 copy of these numbers.
 
-WHY THIS FILE EXISTS: earlier versions had PIPE_AREA_CM2 and Cd typed
-separately in blockage_detector.py, flowguard_dashboard.py, and a live
-monitor script. When those copies drifted apart even slightly, it caused
-a phantom "blockage" reading on a perfectly clean pipe — a real bug that
-happened during development. This file makes that class of bug impossible:
-change a value ONCE here, and every script picks it up automatically.
+All physical quantities are in SI units (m, m², m³/s, m/s²) internally.
+Display/legacy cm-based values are provided for UI compatibility.
 """
 
 import math
 
 # ------------------------------------------------------------------
-# HARDWARE GEOMETRY (measured with a ruler)
+# HARDWARE GEOMETRY — SI units (measured prototype constants)
+# ------------------------------------------------------------------
+SENSOR_TO_BOTTOM_M = 0.1383          # distance from sensor face to container bottom (m)
+CONTAINER_HEIGHT_M = 0.075           # container overflow height (m)
+LAKE_AREA_M2 = 0.0308                # inlet box / "lake" base area (m²)
+DRAIN_AREA_M2 = 2.83e-4              # drainage pipe cross-sectional area (m²)
+DRAIN_CENTER_HEIGHT_M = 0.012        # height of drain center above container bottom (m)
+GRAVITY_M_S2 = 9.81                  # gravitational acceleration (m/s²)
+
+# ------------------------------------------------------------------
+# HARDWARE GEOMETRY — cm / cm² legacy aliases (for UI display only)
 # ------------------------------------------------------------------
 PIPE_DIAMETER_CM = 1.90
-PIPE_AREA_CM2 = math.pi * (PIPE_DIAMETER_CM / 2) ** 2  # = 2.8353 cm^2
-
-INLET_BOX_BASE_AREA_CM2 = 308.0  # cm^2, rectangular inlet box / "lake"
+PIPE_AREA_CM2 = math.pi * (PIPE_DIAMETER_CM / 2) ** 2   # ≈ 2.8353 cm²
+INLET_BOX_BASE_AREA_CM2 = 308.0     # cm²
 
 # ------------------------------------------------------------------
-# CALIBRATION (from your jug-pour test — see calibrate_cd() in blockage_detector.py)
+# CALIBRATION
 # ------------------------------------------------------------------
+# Cd for a sharp-edged orifice.  Field-calibrated value preserved from
+# previous version.  Do NOT hardcode — recalibrate via calibrate_cd().
 CALIBRATED_CD = 0.542
 
 # ------------------------------------------------------------------
-# ASSUMED LIVE INFLOW RATE (mL/s == cm^3/s)
+# INFLOW RATE
 # ------------------------------------------------------------------
-# During a live demo, you pour water into the inlet box at roughly this
-# steady rate. The blockage calculation assumes this is the current real
-# inflow — for accurate results, you MUST pour at approximately this rate.
-#
-# IMPORTANT — verify this matches YOUR real pour rate before trusting any
-# readings: with your pipe area (2.8353 cm^2) and Cd (0.542), too slow a
-# pour gives water heights under 1mm — far below what an HC-SR04 can
-# reliably measure (noise floor ~0.2-0.3cm even with filtering), making
-# blockage % meaningless. 100-150 mL/s (a fast, steady stream — roughly a
-# 500mL bottle emptied in 3-5 seconds) gives clean-pipe heights of 2-5cm,
-# comfortably measurable. Test with a jug + stopwatch: pour a measured
-# volume at your intended demo speed, time it, confirm volume/time lands
-# in this range before setting this constant.
-DEFAULT_INFLOW_Q_CM3S = 120.0
+# Constant prototype inflow (SI: m³/s; display: mL/s == cm³/s)
+INFLOW_RATE_M3S = 5.0e-5             # 50 mL/s in SI
+DEFAULT_INFLOW_Q_CM3S = 50.0         # mL/s == cm³/s (legacy/UI alias)
 
 # ------------------------------------------------------------------
-# BLOCKAGE ALERT THRESHOLD
+# BLOCKAGE ALERT THRESHOLD (legacy simple-threshold, still used in UI)
 # ------------------------------------------------------------------
-BLOCKAGE_ALERT_THRESHOLD_PCT = 15.0  # above this % => "BLOCKAGE DETECTED"
+BLOCKAGE_ALERT_THRESHOLD_PCT = 15.0
 
 # ------------------------------------------------------------------
-# SERIAL CONNECTION (edit SERIAL_PORT to match your ESP32's actual port)
+# RESIDUAL-BASED STATE MACHINE THRESHOLDS
 # ------------------------------------------------------------------
-SERIAL_PORT = "COM7"  # <-- CHANGE THIS to your actual port (Tools -> Port in Arduino IDE)
+# All residuals are in m/s (rate of water-level change).
+# The enter threshold must be > exit threshold to prevent oscillation.
+BLOCKAGE_ENTER_THRESHOLD = 2.0e-4    # residual (m/s) to enter POSSIBLE_BLOCKAGE
+BLOCKAGE_EXIT_THRESHOLD = 8.0e-5     # residual (m/s) to exit back to NORMAL
+BLOCKAGE_CONFIRMATION_SAMPLES = 5    # consecutive above-enter samples -> CONFIRMED
+CLEAR_CONFIRMATION_SAMPLES = 8       # consecutive below-exit samples -> NORMAL
+MIN_CLEARING_DURATION = 5            # min samples to stay in CLEARING before NORMAL
+RESIDUAL_WINDOW_SIZE = 20            # rolling window for residual statistics
+
+# ------------------------------------------------------------------
+# SERIAL CONNECTION
+# ------------------------------------------------------------------
+SERIAL_PORT = "COM7"   # change to match actual port
 SERIAL_BAUD = 115200
 
 NODE_NAME = "Physical_Node_1"

@@ -1,37 +1,47 @@
 """
-serial_reader.py — runs continuously in its own terminal window, separate
-from the dashboard. Reads live CSV from the ESP32, computes blockage % for
-every valid reading using the SAME shared config as the dashboard, and logs
-each result to the database. The dashboard auto-refreshes and displays
-whatever the latest logged reading is — this is what makes it "live":
-place your finger over the pipe -> this script picks up the next reading
--> computes and logs blockage -> dashboard shows it within ~1-2 seconds.
+serial_reader.py — runs continuously in its own terminal, reads live CSV from
+the ESP32, and drives the reversible state machine in blockage_detector.py.
 
-Run this BEFORE opening the dashboard, and leave it running throughout
-your demo, in its own terminal window.
+The state machine (NORMAL → POSSIBLE_BLOCKAGE → BLOCKAGE_CONFIRMED →
+CLEARING → NORMAL) evaluates CURRENT hydraulic behaviour every reading.
+Historical blockage events are logged to the database but never force the
+current state to stay blocked after a drain clears.
 
 Usage:
     python serial_reader.py
-(port/baud are read from config.py — edit SERIAL_PORT there if needed)
+(port/baud are read from config.py — edit SERIAL_PORT there)
 """
 
 import time
 import serial
 
-from blockage_detector import calculate_area, blockage_percent
-from storage import log_reading
+from blockage_detector import (
+    BlockageDetectorState,
+    BlockageState,
+    process_reading,
+    calculate_area,
+    blockage_percent,
+    ml_confirm_anomaly,
+)
+from storage import log_reading, log_blockage_event
 from config import (
     SERIAL_PORT, SERIAL_BAUD, PIPE_AREA_CM2, CALIBRATED_CD,
-    DEFAULT_INFLOW_Q_CM3S, NODE_NAME,
+    DEFAULT_INFLOW_Q_CM3S, INFLOW_RATE_M3S, NODE_NAME,
+    SENSOR_TO_BOTTOM_M,
 )
 
+_STATE_LABELS = {
+    BlockageState.NORMAL: "NORMAL — channel clear",
+    BlockageState.POSSIBLE_BLOCKAGE: "POSSIBLE BLOCKAGE — monitoring",
+    BlockageState.BLOCKAGE_CONFIRMED: "BLOCKAGE CONFIRMED",
+    BlockageState.CLEARING: "CLEARING — drain recovering",
+}
 
-def parse_line(line):
+
+def parse_line(line: str):
     """
     Expects CSV: t_ms,distance_cm,water_level_cm
-    Firmware sends "ERR" in place of a number on bad readings — float()
-    will raise ValueError on that, which we catch and skip, same as any
-    other malformed line (like the header/comment lines starting with '#').
+    Returns (t_ms, distance_cm, water_level_cm) or None on bad lines.
     """
     line = line.strip()
     if not line or line.startswith("#"):
@@ -44,23 +54,30 @@ def parse_line(line):
         distance_cm = float(parts[1])
         water_level_cm = float(parts[2])
     except ValueError:
-        return None  # "ERR" reading, header line, or garbage — skip
+        return None
 
     if distance_cm < 0 or water_level_cm < 0:
-        return None  # extra safety, shouldn't trigger given the try/except above
+        return None
 
     return t_ms, distance_cm, water_level_cm
 
 
 def main():
-    print(f"FlowGuard Live Monitor")
-    print(f"Pipe area: {PIPE_AREA_CM2:.4f} cm^2  |  Cd: {CALIBRATED_CD}  |  Assumed inflow: {DEFAULT_INFLOW_Q_CM3S} mL/s")
+    print("FlowGuard Live Monitor — residual-based state machine active")
+    print(f"Pipe area: {PIPE_AREA_CM2:.4f} cm²  |  Cd: {CALIBRATED_CD}")
+    print(f"Inflow: {DEFAULT_INFLOW_Q_CM3S} mL/s  |  Sensor-to-bottom: {SENSOR_TO_BOTTOM_M*100:.2f} cm")
     print(f"Connecting to {SERIAL_PORT} @ {SERIAL_BAUD} baud...")
 
     ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=2)
-    time.sleep(2)  # let ESP32 reset after serial connect
-    print("Connected. Reading live data — pour water and try blocking the pipe.\n")
-    print("Reminder: pour at roughly the rate set in config.py (DEFAULT_INFLOW_Q_CM3S) for accurate readings.\n")
+    time.sleep(2)
+    print("Connected. Reading live data.\n")
+
+    # One detector state object — persists across all readings so the state
+    # machine and rolling windows accumulate correctly.
+    det = BlockageDetectorState(cd=CALIBRATED_CD, q_in_m3s=INFLOW_RATE_M3S)
+
+    prev_t_ms = None
+    prev_state = None
 
     while True:
         raw_line = ser.readline().decode("utf-8", errors="ignore")
@@ -69,30 +86,51 @@ def main():
             continue
 
         t_ms, distance_cm, water_level_cm = parsed
-        h = water_level_cm
 
-        if h <= 0:
-            print(f"[t={t_ms:.0f}ms] water={h:.2f}cm — box empty/dry, no flow to analyze")
+        # Convert sensor distance from cm → m for the physics engine
+        distance_m = distance_cm / 100.0
+
+        # Estimate dt; default 1 s if we can't compute it
+        dt_s = (t_ms - prev_t_ms) / 1000.0 if prev_t_ms is not None else 1.0
+        if dt_s <= 0 or dt_s > 60:
+            dt_s = 1.0
+        prev_t_ms = t_ms
+
+        reading, current_state = process_reading(det, distance_m, dt_s)
+
+        if reading is None:
+            print(f"[t={t_ms:.0f}ms] INVALID reading (distance={distance_cm:.2f}cm) — skipped")
             continue
 
-        area = calculate_area(DEFAULT_INFLOW_Q_CM3S, CALIBRATED_CD, h)
-        pct = blockage_percent(area, PIPE_AREA_CM2)
+        # Legacy cm-based blockage % for UI/logging compatibility
+        area_cm2 = calculate_area(DEFAULT_INFLOW_Q_CM3S, CALIBRATED_CD,
+                                   water_level_cm)
+        pct = blockage_percent(area_cm2, PIPE_AREA_CM2)
 
-        status = "CLEAR"
-        if pct is not None:
-            if pct > 15:
-                status = "BLOCKAGE DETECTED"
-            elif pct > 5:
-                status = "MINOR / WITHIN NOISE"
+        ml_flag = ml_confirm_anomaly(det, reading)
+        state_label = _STATE_LABELS[current_state]
 
-        area_str = f"{area:.3f}" if area is not None else "N/A"
+        area_str = f"{area_cm2:.3f}" if area_cm2 is not None else "N/A"
         pct_str = f"{pct:.1f}%" if pct is not None else "N/A"
+        overflow_str = " ⚠ OVERFLOW" if reading.overflow else ""
 
-        print(f"[t={t_ms:.0f}ms] distance={distance_cm:.2f}cm | water={h:.2f}cm | "
-              f"area={area_str}cm^2 | blockage={pct_str} | {status}")
+        print(
+            f"[t={t_ms:.0f}ms] dist={distance_cm:.2f}cm | depth={reading.water_depth_m*100:.2f}cm "
+            f"| h={reading.hydraulic_head_m*100:.2f}cm | resid={reading.residual*1000:.3f}mm/s "
+            f"| area={area_str}cm² | blk={pct_str} | ML={'YES' if ml_flag else 'no'} "
+            f"| STATE: {state_label}{overflow_str}"
+        )
 
-        # Log every reading — the dashboard reads the latest one on each auto-refresh
-        log_reading(NODE_NAME, h, DEFAULT_INFLOW_Q_CM3S, area, pct)
+        # Log every reading to the database
+        log_reading(NODE_NAME, water_level_cm, DEFAULT_INFLOW_Q_CM3S, area_cm2, pct)
+
+        # Log a blockage event on state transitions into CONFIRMED
+        if (current_state == BlockageState.BLOCKAGE_CONFIRMED and
+                prev_state != BlockageState.BLOCKAGE_CONFIRMED):
+            log_blockage_event(NODE_NAME, pct or 0.0, int(ml_flag), None)
+            print(f"  >>> BLOCKAGE EVENT LOGGED <<<")
+
+        prev_state = current_state
 
 
 if __name__ == "__main__":
