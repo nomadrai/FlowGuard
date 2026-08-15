@@ -50,7 +50,7 @@ BLOCKAGE_ALERT_THRESHOLD_PCT = 15.0
 # ------------------------------------------------------------------
 # All residuals are in m/s (rate of water-level change).
 # The enter threshold must be > exit threshold to prevent oscillation.
-BLOCKAGE_ENTER_THRESHOLD = 2.0e-4    # residual (m/s) to enter POSSIBLE_BLOCKAGE
+BLOCKAGE_ENTER_THRESHOLD = 2.0e-3    # residual (m/s) to enter POSSIBLE_BLOCKAGE
 BLOCKAGE_EXIT_THRESHOLD = 8.0e-5     # residual (m/s) to exit back to NORMAL
 BLOCKAGE_CONFIRMATION_SAMPLES = 5    # consecutive above-enter samples -> CONFIRMED
 CLEAR_CONFIRMATION_SAMPLES = 8       # consecutive below-exit samples -> NORMAL
