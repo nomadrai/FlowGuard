@@ -17,22 +17,18 @@ Three layers, stacked:
 Usage as a library — see test block at bottom for a runnable example.
 """
 
-import math
-
 import numpy as np
 from sklearn.ensemble import IsolationForest
 
+from config import PIPE_DIAMETER_CM, PIPE_AREA_CM2, INLET_BOX_BASE_AREA_CM2
+
 G_CM_S2 = 981.0  # gravity, cm/s^2 (centimeter units throughout this module)
 
-# ------------------------------------------------------------------
-# PHYSICAL CONSTANTS — derived from the deployed hardware geometry
-# ------------------------------------------------------------------
-# Round drainage pipe: diameter 1.90 cm → A = π × (d/2)²
-PIPE_DIAMETER_CM: float = 1.90
-PIPE_AREA_CM2: float = math.pi * (PIPE_DIAMETER_CM / 2) ** 2  # ≈ 2.8353 cm²
-
-# Rectangular inlet box (where rainfall water collects above the pipe)
-INLET_BOX_BASE_AREA_CM2: float = 308.0  # cm²
+# NOTE: PIPE_DIAMETER_CM, PIPE_AREA_CM2, INLET_BOX_BASE_AREA_CM2 now come from
+# config.py — the single shared source of truth across all FlowGuard files.
+# (Previously duplicated here, which risked drifting out of sync with the
+# dashboard's copy — exactly the kind of mismatch that caused a false
+# blockage reading during development.)
 
 
 # ------------------------------------------------------------------

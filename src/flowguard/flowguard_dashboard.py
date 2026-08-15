@@ -6,12 +6,12 @@ trail into one dashboard.
 Run: streamlit run flowguard_dashboard.py
 """
 
+import time
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 from blockage_detector import (
-    PIPE_AREA_CM2, INLET_BOX_BASE_AREA_CM2,
     calibrate_cd, calculate_area, blockage_percent,
     extract_window_features, BlockageAnomalyDetector, forecast_days_to_critical,
 )
@@ -19,6 +19,10 @@ from network_simulation import WaterNetwork, generate_rainfall_pulse
 from storage import (
     init_db, log_calibration, log_reading, log_blockage_event, log_network_run,
     get_calibration_log, get_readings, get_blockage_events, get_network_runs,
+)
+from config import (
+    PIPE_AREA_CM2, INLET_BOX_BASE_AREA_CM2, CALIBRATED_CD,
+    DEFAULT_INFLOW_Q_CM3S, BLOCKAGE_ALERT_THRESHOLD_PCT, NODE_NAME,
 )
 
 st.set_page_config(page_title="FlowGuard — Nagpur Flood Early Warning", layout="wide", initial_sidebar_state="collapsed")
@@ -73,53 +77,42 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================
-# SIDEBAR — system config (inflow rate) + calibration
+# SIDEBAR — Live Mode toggle + calibration (optional re-calibration)
 # ============================================================
-st.sidebar.header("System Configuration")
-st.sidebar.caption(
-    "Set the rainfall inflow rate **once before each monitoring session**, "
-    "then submit individual water-height readings below."
-)
-inflow_ml_s = st.sidebar.number_input(
-    "Rainfall inflow rate (mL/s)",
-    value=20.0,
-    min_value=0.1,
-    help=(
-        "How much water is entering the inlet box per second (rainfall rate). "
-        "Measure this with a measuring jug: pour a known volume at a steady "
-        "rate, time it, then compute volume ÷ time. 1 mL = 1 cm³."
-    ),
-)
-# Convert mL/s → cm³/s (they are equal by definition; label is clearer in mL/s)
-inflow_q_cm3s = inflow_ml_s  # 1 mL == 1 cm³
+st.sidebar.header("Mode")
+live_mode = st.sidebar.toggle("🔴 Live Mode (auto-refresh from serial_reader.py)", value=True)
+if live_mode:
+    refresh_rate = st.sidebar.slider("Refresh rate (sec)", 1, 5, 2)
+    st.sidebar.caption("Run `python serial_reader.py` in a separate terminal FIRST — this dashboard just displays whatever it logs.")
 
 st.sidebar.markdown("---")
 st.sidebar.caption(
-    f"**Hardware geometry (fixed):**  \n"
+    f"**Hardware geometry (from config.py):**  \n"
     f"Drainage pipe: ⌀ 1.90 cm, area = {PIPE_AREA_CM2:.4f} cm²  \n"
-    f"Inlet box base: {INLET_BOX_BASE_AREA_CM2:.0f} cm²"
+    f"Inlet box base: {INLET_BOX_BASE_AREA_CM2:.0f} cm²  \n"
+    f"Calibrated Cd: {CALIBRATED_CD}  \n"
+    f"Assumed inflow: {DEFAULT_INFLOW_Q_CM3S} mL/s"
 )
+
 st.sidebar.markdown("---")
-st.sidebar.header("Calibration")
-st.sidebar.caption("Run once per physical channel using a clean (unblocked) test pour.")
+st.sidebar.header("Re-calibrate (optional)")
+st.sidebar.caption("Only needed if you want to recompute Cd from a fresh test pour. Otherwise the value above (from config.py) is already active.")
 pour_volume = st.sidebar.number_input("Pour volume (mL)", value=200.0, min_value=1.0)
 pour_time = st.sidebar.number_input("Pour time (sec)", value=10.0, min_value=0.1)
 steady_h = st.sidebar.number_input("Steady water height (cm)", value=2.0, min_value=0.1)
-# Clean area is fixed by the pipe geometry — show it read-only for transparency
 a_clean = PIPE_AREA_CM2
-st.sidebar.markdown(
-    f"Known clean pipe area (cm²): **{a_clean:.4f}** *(pipe ⌀ 1.90 cm, auto-set)*"
-)
 
-if st.sidebar.button("Calibrate Cd"):
+if st.sidebar.button("Recalibrate Cd"):
     cd_val = calibrate_cd(pour_volume, pour_time, steady_h, a_clean)
     st.session_state["cd"] = cd_val
-    st.session_state["a_clean"] = a_clean
     log_calibration(cd_val, pour_volume, pour_time, steady_h, a_clean)
-    st.sidebar.success(f"Cd = {cd_val:.4f}")
+    st.sidebar.success(f"New Cd = {cd_val:.4f} — update CALIBRATED_CD in config.py to make this permanent.")
 
-cd_active = st.session_state.get("cd", None)
-a_clean_active = st.session_state.get("a_clean", a_clean)
+# Active Cd: use a fresh recalibration if one was just run this session,
+# otherwise fall back to the shared config value (this is what serial_reader.py
+# is also using, so live and dashboard stay consistent).
+cd_active = st.session_state.get("cd", CALIBRATED_CD)
+a_clean_active = a_clean
 
 # ============================================================
 # SECTION 1 — Real Physical Node
@@ -127,76 +120,106 @@ a_clean_active = st.session_state.get("a_clean", a_clean)
 st.markdown('<div class="fg-section-label">Physical Node — Live Blockage Detection</div>', unsafe_allow_html=True)
 st.markdown('<div class="fg-section-sub">Orifice equation (Bernoulli-derived) converts live water height into calculated channel area</div>', unsafe_allow_html=True)
 
-if cd_active is None:
-    st.markdown('<div class="fg-note">⚠️ Set the inflow rate and calibrate Cd in the sidebar first, then submit readings here.</div>', unsafe_allow_html=True)
+
+def compute_ml_and_forecast(history_df):
+    """Shared logic: given the readings history, compute ML confirmation + forecast for the LATEST reading."""
+    recent_pcts = history_df["blockage_pct"].head(5).tolist()[::-1]  # oldest to newest
+    ml_confirmed = False
+    forecast = None
+    if len(recent_pcts) >= 5:
+        features = extract_window_features(recent_pcts)
+        baseline_pool = history_df["blockage_pct"].tolist()
+        if len(baseline_pool) >= 15:
+            baseline_windows = [baseline_pool[i:i + 5] for i in range(0, len(baseline_pool) - 5, 5)]
+            baseline_features = [extract_window_features(w) for w in baseline_windows if len(w) == 5]
+            if len(baseline_features) >= 5:
+                detector = BlockageAnomalyDetector(contamination=0.1)
+                detector.fit(baseline_features)
+                ml_confirmed = detector.is_confirmed_anomaly(features)
+        days = list(range(len(recent_pcts)))
+        forecast = forecast_days_to_critical(recent_pcts, days, critical_threshold_pct=50.0)
+    return ml_confirmed, forecast
+
+
+def render_reading_card(area, pct, ml_confirmed, forecast, source_label):
+    accent = "var(--critical)" if (pct is not None and pct > BLOCKAGE_ALERT_THRESHOLD_PCT) else "var(--safe)"
+    status_text = "BLOCKAGE DETECTED" if (pct is not None and pct > BLOCKAGE_ALERT_THRESHOLD_PCT) else "CHANNEL CLEAR"
+    ml_text = "ML-CONFIRMED" if ml_confirmed else "single reading — not yet confirmed"
+    forecast_text = f"{forecast} days to critical (50%)" if forecast is not None else "insufficient trend data"
+    area_str = f"{area:.4f}" if area is not None else "N/A"
+    pct_str = f"{pct:.1f}" if pct is not None else "N/A"
+
+    st.markdown(f"""
+    <div class="fg-card" style="--card-accent: {accent};">
+        <div style="font-size:1.1rem; font-weight:700; color:{accent}; margin-bottom:10px;">{status_text}</div>
+        <div class="fg-stat" style="margin-bottom:10px;">
+            <div class="val">{pct_str}%</div>
+            <div class="lbl">Blockage estimate</div>
+        </div>
+        <div style="font-size:0.8rem; color:var(--text-mid);">
+            Calculated area: {area_str} cm² (clean pipe = {PIPE_AREA_CM2:.4f} cm²)<br>
+            Inflow assumed: {DEFAULT_INFLOW_Q_CM3S} mL/s (config.py)<br>
+            ML confirmation: {ml_text}<br>
+            Trend forecast: {forecast_text}<br>
+            <span style="color:var(--text-low);">Source: {source_label}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+if live_mode:
+    st.markdown('<div class="fg-note">🔴 <b>Live Mode active</b> — showing the latest reading logged by <span class="mono">serial_reader.py</span>. Make sure that script is running in a separate terminal.</div>', unsafe_allow_html=True)
+
+    hist = get_readings(NODE_NAME)
+    if hist.empty:
+        st.warning("No readings yet — start `python serial_reader.py` in another terminal, then pour water through the sensor.")
+    else:
+        latest = hist.iloc[0]
+        ml_confirmed, forecast = compute_ml_and_forecast(hist)
+        if latest["blockage_pct"] is not None and latest["blockage_pct"] > BLOCKAGE_ALERT_THRESHOLD_PCT:
+            log_blockage_event(NODE_NAME, latest["blockage_pct"], int(ml_confirmed), forecast)
+
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.metric("Latest water height", f"{latest['water_level_cm']:.2f} cm")
+            st.caption(f"Last updated: {latest['timestamp']}")
+        with col2:
+            render_reading_card(latest["calculated_area_cm2"], latest["blockage_pct"], ml_confirmed, forecast, "LIVE — serial_reader.py")
+
+        if len(hist) > 1:
+            st.markdown("**Blockage % over readings (live)**")
+            chart_df = hist.iloc[::-1][["blockage_pct"]].reset_index(drop=True)
+            st.line_chart(chart_df)
+
+    # Auto-refresh
+    time.sleep(refresh_rate)
+    st.rerun()
+
 else:
+    st.markdown('<div class="fg-note">Manual Mode — enter a water height reading by hand (useful for testing without the live serial connection).</div>', unsafe_allow_html=True)
     col1, col2 = st.columns([1, 2])
     with col1:
-        st.markdown(
-            f"**Enter a live reading** from Serial Monitor  \n"
-            f"*(inflow rate: {inflow_ml_s:.1f} mL/s — change in sidebar if needed)*"
-        )
         live_h = st.number_input("Current water height h (cm)", value=2.0, key="live_h",
                                   help="Read the water_level_cm column from the ESP32 Serial Monitor output.")
 
         if st.button("Submit reading"):
-            # inflow Q comes from the sidebar — not entered per-reading
-            area = calculate_area(inflow_q_cm3s, cd_active, live_h)
+            area = calculate_area(DEFAULT_INFLOW_Q_CM3S, cd_active, live_h)
             pct = blockage_percent(area, a_clean_active)
-            log_reading("Physical_Node_1", live_h, inflow_q_cm3s, area, pct)
+            log_reading(NODE_NAME, live_h, DEFAULT_INFLOW_Q_CM3S, area, pct)
 
-            # Rolling window ML confirmation
-            history = get_readings("Physical_Node_1")
-            recent_pcts = history["blockage_pct"].head(5).tolist()[::-1]  # oldest to newest
-            ml_confirmed = False
-            forecast = None
-            if len(recent_pcts) >= 5:
-                features = extract_window_features(recent_pcts)
-                # Build a baseline detector from readings beyond the recent window, if enough exist
-                baseline_pool = history["blockage_pct"].tolist()
-                if len(baseline_pool) >= 15:
-                    baseline_windows = [baseline_pool[i:i+5] for i in range(0, len(baseline_pool) - 5, 5)]
-                    baseline_features = [extract_window_features(w) for w in baseline_windows if len(w) == 5]
-                    if len(baseline_features) >= 5:
-                        detector = BlockageAnomalyDetector(contamination=0.1)
-                        detector.fit(baseline_features)
-                        ml_confirmed = detector.is_confirmed_anomaly(features)
-
-                days = list(range(len(recent_pcts)))
-                forecast = forecast_days_to_critical(recent_pcts, days, critical_threshold_pct=50.0)
-
-            if pct is not None and pct > 15:
-                log_blockage_event("Physical_Node_1", pct, int(ml_confirmed), forecast)
+            history = get_readings(NODE_NAME)
+            ml_confirmed, forecast = compute_ml_and_forecast(history)
+            if pct is not None and pct > BLOCKAGE_ALERT_THRESHOLD_PCT:
+                log_blockage_event(NODE_NAME, pct, int(ml_confirmed), forecast)
 
             st.session_state["last_reading"] = {"area": area, "pct": pct, "ml_confirmed": ml_confirmed, "forecast": forecast}
 
     with col2:
         last = st.session_state.get("last_reading")
         if last:
-            pct = last["pct"]
-            accent = "var(--critical)" if (pct is not None and pct > 15) else "var(--safe)"
-            status_text = "BLOCKAGE DETECTED" if (pct is not None and pct > 15) else "CHANNEL CLEAR"
-            ml_text = "ML-CONFIRMED" if last["ml_confirmed"] else "single reading — not yet confirmed"
-            forecast_text = f"{last['forecast']} days to critical (50%)" if last["forecast"] is not None else "insufficient trend data"
+            render_reading_card(last["area"], last["pct"], last["ml_confirmed"], last["forecast"], "manual entry")
 
-            st.markdown(f"""
-            <div class="fg-card" style="--card-accent: {accent};">
-                <div style="font-size:1.1rem; font-weight:700; color:{accent}; margin-bottom:10px;">{status_text}</div>
-                <div class="fg-stat" style="margin-bottom:10px;">
-                    <div class="val">{pct:.1f}%</div>
-                    <div class="lbl">Blockage estimate</div>
-                </div>
-                <div style="font-size:0.8rem; color:var(--text-mid);">
-                    Calculated area: {last['area']:.4f} cm² (clean pipe = {a_clean_active:.4f} cm²)<br>
-                    Inflow used: {inflow_ml_s:.1f} mL/s (set in sidebar)<br>
-                    ML confirmation: {ml_text}<br>
-                    Trend forecast: {forecast_text}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    # History chart
-    hist = get_readings("Physical_Node_1")
+    hist = get_readings(NODE_NAME)
     if not hist.empty and len(hist) > 1:
         st.markdown("**Blockage % over readings**")
         chart_df = hist.iloc[::-1][["blockage_pct"]].reset_index(drop=True)

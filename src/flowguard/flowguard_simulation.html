@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FlowGuard — Blockage Fingerprinting Simulation</title>
+<style>
+  :root{
+    --ink:#0a1616;
+    --panel:#0f2226;
+    --panel2:#122a2f;
+    --grid:#1c3a3f;
+    --water:#22b8c4;
+    --water-deep:#0891b2;
+    --warning:#eab308;
+    --danger:#f4425f;
+    --safe:#43d38a;
+    --paper:#e7f3f1;
+    --muted:#6f9498;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Consolas", monospace;
+    --sans: -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:
+      radial-gradient(1200px 600px at 15% -10%, #123338 0%, transparent 60%),
+      radial-gradient(1000px 500px at 100% 0%, #0d2a2e 0%, transparent 55%),
+      var(--ink);
+    color:var(--paper); font-family:var(--sans);
+    min-height:100vh; padding:28px 20px 60px;
+  }
+  .wrap{max-width:1180px; margin:0 auto;}
+
+  header{margin-bottom:18px;}
+  .eyebrow{font-family:var(--mono); font-size:11px; letter-spacing:.18em; text-transform:uppercase; color:var(--water); opacity:.85;}
+  h1{margin:6px 0 4px; font-size:clamp(24px,3.4vw,36px); font-weight:800; letter-spacing:-0.01em;}
+  .sub{color:var(--muted); font-size:14.5px; max-width:640px; line-height:1.5;}
+
+  .controls{
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    background:var(--panel); border:1px solid var(--grid); border-radius:14px;
+    padding:14px 18px; margin:20px 0 22px;
+  }
+  button{
+    font-family:var(--sans); font-weight:700; font-size:13.5px; cursor:pointer;
+    border-radius:9px; border:1px solid var(--grid); padding:9px 16px;
+    background:var(--panel2); color:var(--paper); transition:.15s ease;
+  }
+  button:hover{border-color:var(--water); color:var(--water);}
+  #playBtn{background:var(--water); color:#04191b; border-color:var(--water);}
+  #playBtn:hover{background:#3fd0dc; color:#04191b;}
+  .day-readout{font-family:var(--mono); font-size:13px; color:var(--muted); margin-left:auto; display:flex; align-items:center; gap:10px;}
+  .day-readout b{color:var(--paper); font-size:16px; letter-spacing:.03em;}
+  input[type=range]{width:220px; accent-color:var(--water);}
+  .phase-tag{font-family:var(--mono); font-size:11px; padding:3px 9px; border-radius:99px; border:1px solid var(--grid); color:var(--muted);}
+  .phase-tag.active{color:var(--ink); background:var(--water); border-color:var(--water); font-weight:700;}
+
+  .columns{display:grid; grid-template-columns:1fr 1fr; gap:18px;}
+  @media (max-width:880px){.columns{grid-template-columns:1fr;}}
+
+  .col{background:var(--panel); border:1px solid var(--grid); border-radius:16px; padding:18px 18px 20px; position:relative; overflow:hidden;}
+  .col.without{border-color:#3a2226;}
+  .col.with{border-color:#1c3a35;}
+  .col h2{margin:0 0 2px; font-size:16px; display:flex; align-items:center; gap:8px;}
+  .col .tag{font-family:var(--mono); font-size:10.5px; padding:2px 8px; border-radius:99px; font-weight:700; letter-spacing:.02em;}
+  .without .tag{background:rgba(244,66,95,.15); color:#ff8a9c; border:1px solid rgba(244,66,95,.35);}
+  .with .tag{background:rgba(67,211,138,.15); color:var(--safe); border:1px solid rgba(67,211,138,.35);}
+  .col .desc{color:var(--muted); font-size:12.5px; margin:2px 0 14px;}
+
+  .panel-title{font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); margin:14px 0 6px;}
+  .row2{display:grid; grid-template-columns:1fr 1fr; gap:12px;}
+
+  svg{display:block; width:100%; height:auto;}
+  .badges{display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;}
+  .badge{font-family:var(--mono); font-size:11.5px; background:var(--panel2); border:1px solid var(--grid); border-radius:8px; padding:6px 10px; display:flex; gap:6px; align-items:baseline;}
+  .badge b{font-size:14px; color:var(--paper);}
+  .badge.status-safe b{color:var(--safe);}
+  .badge.status-warn b{color:var(--warning);}
+  .badge.status-danger b{color:var(--danger);}
+
+  .alert-line{stroke:var(--warning); stroke-width:1.4; stroke-dasharray:4 3;}
+  .alert-label{font-family:var(--mono); font-size:9px; fill:var(--warning); font-weight:700;}
+
+  .banner{
+    margin-top:14px; border-radius:10px; padding:12px 14px; font-size:13px; line-height:1.45;
+    opacity:0; transform:translateY(6px); transition:.4s ease; font-weight:600;
+  }
+  .banner.show{opacity:1; transform:translateY(0);}
+  .banner.danger{background:rgba(244,66,95,.12); border:1px solid rgba(244,66,95,.4); color:#ffb3c0;}
+  .banner.safe{background:rgba(67,211,138,.12); border:1px solid rgba(67,211,138,.4); color:#a9f2cd;}
+  .banner small{display:block; margin-top:4px; font-weight:400; color:var(--muted);}
+
+  footer{margin-top:26px;}
+  .factstrip{
+    display:grid; grid-template-columns:1fr 1fr; gap:18px;
+  }
+  @media (max-width:880px){.factstrip{grid-template-columns:1fr;}}
+  .fact-card{background:var(--panel); border:1px solid var(--grid); border-radius:14px; padding:16px 18px;}
+  .fact-card h3{margin:0 0 8px; font-size:12.5px; text-transform:uppercase; letter-spacing:.1em; font-family:var(--mono); color:var(--muted);}
+  .fact-card .num-row{display:flex; gap:22px; flex-wrap:wrap;}
+  .fact-card .num{font-family:var(--mono); font-size:22px; font-weight:800;}
+  .fact-card .lbl{font-size:11px; color:var(--muted); margin-top:2px;}
+  .fact-card.real .num{color:#ff8a9c;}
+  .fact-card.sim .num{color:var(--safe);}
+  .note{color:var(--muted); font-size:11.5px; margin-top:16px; line-height:1.6; border-top:1px solid var(--grid); padding-top:14px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">FlowGuard // Segment 2, Nag River corridor</div>
+    <h1>Blockage Fingerprinting — Live Simulation</h1>
+    <div class="sub">Same storm. Same drain. One city watches for water level — one city watches the <em>gap</em> between what physics predicts and what the sensor sees. Press play.</div>
+  </header>
+
+  <div class="controls">
+    <button id="playBtn">▶ Play simulation</button>
+    <button id="resetBtn">↺ Reset</button>
+    <button id="speedBtn">1×</button>
+    <span class="phase-tag" id="phaseBuild">Silent buildup</span>
+    <span class="phase-tag" id="phaseStorm">Storm event</span>
+    <div class="day-readout">
+      <input type="range" id="scrub" min="0" max="40" step="0.1" value="0">
+      Day <b id="dayNum">0</b> / 40
+    </div>
+  </div>
+
+  <div class="columns">
+
+    <!-- WITHOUT FLOWGUARD -->
+    <div class="col without">
+      <h2>Without FlowGuard <span class="tag">2023-style</span></h2>
+      <div class="desc">One threshold sensor. No one is watching until the water is already high.</div>
+
+      <div class="panel-title">Segment 2 — cross section</div>
+      <svg id="channel-without" viewBox="0 0 240 140"></svg>
+
+      <div class="panel-title">Water level over time</div>
+      <svg id="chart-without" viewBox="0 0 280 120"></svg>
+
+      <div class="panel-title">Nag River corridor</div>
+      <svg id="network-without" viewBox="0 0 280 60"></svg>
+
+      <div class="badges">
+        <div class="badge">CAPACITY LOST <b id="loss-without">0%</b></div>
+        <div class="badge" id="status-without">STATUS <b>Monitoring off</b></div>
+      </div>
+
+      <div class="banner danger" id="banner-without">
+        FLOOD — Ambazari Lake overflow reaches Nag River, Segment 2 capacity gone.
+        <small>This is what actually happened on 23–24 Sept 2023: 4 deaths, 400+ evacuated, ~10,000 houses affected.</small>
+      </div>
+    </div>
+
+    <!-- WITH FLOWGUARD -->
+    <div class="col with">
+      <h2>With FlowGuard</h2>
+      <div class="desc">Predicted vs. actual water level, compared continuously — even on a dry day.</div>
+
+      <div class="panel-title">Segment 2 — cross section</div>
+      <svg id="channel-with" viewBox="0 0 240 140"></svg>
+
+      <div class="panel-title">Predicted (clean channel) vs. actual</div>
+      <svg id="chart-with" viewBox="0 0 280 120"></svg>
+
+      <div class="panel-title">Nag River corridor</div>
+      <svg id="network-with" viewBox="0 0 280 60"></svg>
+
+      <div class="badges">
+        <div class="badge">CAPACITY LOST <b id="loss-with">0%</b></div>
+        <div class="badge" id="status-with">STATUS <b>Monitoring</b></div>
+      </div>
+
+      <div class="banner safe" id="banner-with">
+        FLOOD PREVENTED — blockage detected and cleared before the storm arrived.
+        <small id="alert-detail"></small>
+      </div>
+    </div>
+
+  </div>
+
+  <footer>
+    <div class="factstrip">
+      <div class="fact-card real">
+        <h3>What actually happened — Sept 2023</h3>
+        <div class="num-row">
+          <div><div class="num">4</div><div class="lbl">deaths</div></div>
+          <div><div class="num">400+</div><div class="lbl">evacuated</div></div>
+          <div><div class="num">~10,000</div><div class="lbl">homes affected</div></div>
+          <div><div class="num">₹2,000cr</div><div class="lbl">PIL against NMC</div></div>
+        </div>
+      </div>
+      <div class="fact-card sim">
+        <h3>What FlowGuard changes</h3>
+        <div class="num-row">
+          <div><div class="num" id="fact-alertday">—</div><div class="lbl">day blockage detected</div></div>
+          <div><div class="num" id="fact-leadtime">—</div><div class="lbl">days of warning before storm</div></div>
+          <div><div class="num">0</div><div class="lbl">manual inspections needed</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      Model note for judges: curves use a simplified level ∝ (inflow / open area)^0.55 relation to make the mechanism visible in real time. The actual FlowGuard prototype calibrates this from Manning's equation against a controlled known-flow test on the physical channel, not a fixed constant. The physics shown here is illustrative of the same underlying idea — the gap between prediction and observation is the blockage signal.
+    </div>
+  </footer>
+
+</div>
+
+<script>
+/* ---------- model ---------- */
+const TOTAL_DAYS = 40, BUILD_END = 25;
+const STORM_PEAK = 29, STORM_SIGMA = 2.4, STORM_AMPL = 110, BASE_Q = 6;
+const A_FULL = 100, LOSS_MAX = 50;
+const K = 56.3, EXP = 0.55;
+const OVERFLOW = 85, WARN = 65;
+const ALERT_THRESHOLD = 2.5, CLEAR_DURATION = 4;
+
+function Q(day){
+  if(day < BUILD_END) return BASE_Q + 1.4*Math.sin(day*0.7);
+  const storm = STORM_AMPL*Math.exp(-((day-STORM_PEAK)**2)/(2*STORM_SIGMA**2));
+  return BASE_Q + storm;
+}
+function lossWithout(day){ return Math.min(LOSS_MAX, LOSS_MAX*Math.min(day,BUILD_END)/BUILD_END); }
+function level(q, area){ return Math.min(100, K*Math.pow(Math.max(q,0.1)/area, EXP)); }
+
+function computeAlertDay(){
+  for(let d=1; d<=BUILD_END; d+=0.25){
+    const q = Q(d), area = A_FULL - lossWithout(d);
+    if(level(q,area) - level(q,A_FULL) >= ALERT_THRESHOLD) return Math.round(d*10)/10;
+  }
+  return BUILD_END - 6;
+}
+const ALERT_DAY = computeAlertDay();
+const CLEAR_END = ALERT_DAY + CLEAR_DURATION;
+
+function lossWith(day){
+  if(day <= ALERT_DAY) return lossWithout(day);
+  if(day >= CLEAR_END) return 0;
+  const atAlert = lossWithout(ALERT_DAY);
+  return atAlert*(1-(day-ALERT_DAY)/CLEAR_DURATION);
+}
+
+document.getElementById('fact-alertday').textContent = 'Day ' + Math.round(ALERT_DAY);
+document.getElementById('fact-leadtime').textContent = Math.round(BUILD_END + 1 - ALERT_DAY);
+document.getElementById('alert-detail').textContent =
+  'Residual crossed threshold on Day '+Math.round(ALERT_DAY)+' — '+Math.round(BUILD_END+1-ALERT_DAY)+' days before the storm hit.';
+
+/* precompute series for charts */
+const STEP = 0.25;
+const series = [];
+for(let d=0; d<=TOTAL_DAYS; d+=STEP){
+  const q = Q(d);
+  series.push({
+    d,
+    predicted: level(q, A_FULL),
+    actualWithout: level(q, A_FULL - lossWithout(d)),
+    actualWith: level(q, A_FULL - lossWith(d)),
+  });
+}
+
+/* ---------- svg helpers ---------- */
+const NS='http://www.w3.org/2000/svg';
+function el(tag, attrs){ const e=document.createElementNS(NS,tag); for(const k in attrs) e.setAttribute(k,attrs[k]); return e; }
+
+function statusClass(lvl){ return lvl>=OVERFLOW?'status-danger':(lvl>=WARN?'status-warn':'status-safe'); }
+function waterColor(lvl){ return lvl>=OVERFLOW?'var(--danger)':(lvl>=WARN?'var(--warning)':'var(--water)'); }
+
+/* ----- channel cross-section ----- */
+function buildChannel(svg){
+  svg.innerHTML='';
+  svg.appendChild(el('rect',{x:20,y:14,width:200,height:104,rx:6,fill:'none',stroke:'var(--grid)','stroke-width':2}));
+  const clip = el('clipPath',{id:svg.id+'-clip'});
+  clip.appendChild(el('rect',{x:22,y:16,width:196,height:100,rx:4}));
+  svg.appendChild(clip);
+  const water = el('rect',{id:svg.id+'-water',x:22,width:196,height:0,y:116, fill:'var(--water)','clip-path':'url(#'+svg.id+'-clip)'});
+  svg.appendChild(water);
+  const block = el('path',{id:svg.id+'-block', fill:'#5a6b6e','clip-path':'url(#'+svg.id+'-clip)'});
+  svg.appendChild(block);
+  const label = el('text',{id:svg.id+'-lvl', x:120, y:130, 'text-anchor':'middle', 'font-family':'var(--mono)', 'font-size':'9', fill:'var(--muted)'});
+  label.textContent='level';
+  svg.appendChild(label);
+}
+function updateChannel(svg, lvl, loss){
+  const water = svg.querySelector('#'+svg.id+'-water');
+  const h = (lvl/100)*100;
+  water.setAttribute('y', 116-h);
+  water.setAttribute('height', h);
+  water.setAttribute('fill', waterColor(lvl));
+  const w = (loss/LOSS_MAX)*80;
+  const block = svg.querySelector('#'+svg.id+'-block');
+  const cx=120, base=116;
+  block.setAttribute('d', `M ${cx-w/2} ${base} Q ${cx} ${base-18} ${cx+w/2} ${base} L ${cx+w/2} ${base+4} L ${cx-w/2} ${base+4} Z`);
+  const label = svg.querySelector('#'+svg.id+'-lvl');
+  label.textContent = 'level '+Math.round(lvl)+'%  ·  blocked '+Math.round(loss)+'%';
+}
+
+/* ----- charts ----- */
+const CW=260, CH=90, PAD=14;
+function xPix(d){ return PAD + (d/TOTAL_DAYS)*CW; }
+function yPix(v){ return PAD + (1-v/100)*CH; }
+function pathFor(key){
+  return series.map((p,i)=> (i===0?'M':'L') + xPix(p.d).toFixed(1)+','+yPix(p[key]).toFixed(1)).join(' ');
+}
+function buildChart(svg, withPredicted){
+  svg.innerHTML='';
+  // grid
+  [0,25,50,75,100].forEach(v=>{
+    svg.appendChild(el('line',{x1:PAD,x2:PAD+CW,y1:yPix(v),y2:yPix(v),stroke:'var(--grid)','stroke-width':1}));
+  });
+  // overflow threshold line
+  svg.appendChild(el('line',{x1:PAD,x2:PAD+CW,y1:yPix(OVERFLOW),y2:yPix(OVERFLOW),stroke:'var(--danger)','stroke-width':1,'stroke-dasharray':'3 3',opacity:.6}));
+
+  const clip = el('clipPath',{id:svg.id+'-rc'});
+  clip.appendChild(el('rect',{id:svg.id+'-rcrect',x:PAD,y:0,width:0,height:CH+PAD*2}));
+  svg.appendChild(clip);
+
+  const g = el('g',{'clip-path':'url(#'+svg.id+'-rc)'});
+  if(withPredicted){
+    const gap = el('path',{id:svg.id+'-gap', fill:'url(#'+svg.id+'-grad)', opacity:.55});
+    g.appendChild(gap);
+    const gradDef = el('linearGradient',{id:svg.id+'-grad', x1:0,y1:0,x2:0,y2:1});
+    gradDef.appendChild(el('stop',{offset:'0%','stop-color':'var(--danger)'}));
+    gradDef.appendChild(el('stop',{offset:'100%','stop-color':'var(--warning)'}));
+    svg.appendChild(gradDef);
+    const pred = el('path',{id:svg.id+'-pred', d:pathFor('predicted'), fill:'none', stroke:'var(--muted)','stroke-width':1.6,'stroke-dasharray':'4 3'});
+    g.appendChild(pred);
+  }
+  const actual = el('path',{id:svg.id+'-actual', fill:'none', stroke:'var(--water)','stroke-width':2});
+  g.appendChild(actual);
+  const alertLine = el('line',{id:svg.id+'-alert', class:'alert-line', x1:xPix(ALERT_DAY),x2:xPix(ALERT_DAY), y1:PAD,y2:PAD+CH, opacity:0});
+  g.appendChild(alertLine);
+  svg.appendChild(g);
+  const alertLbl = el('text',{id:svg.id+'-alertlbl', class:'alert-label', x:xPix(ALERT_DAY)+3, y:PAD+9, opacity:0});
+  alertLbl.textContent='ALERT';
+  svg.appendChild(alertLbl);
+}
+function updateChart(svg, day, key, withPredicted){
+  const rcrect = svg.querySelector('#'+svg.id+'-rcrect');
+  rcrect.setAttribute('width', Math.max(0, xPix(day)-PAD));
+  svg.querySelector('#'+svg.id+'-actual').setAttribute('d', pathFor(key));
+  if(withPredicted){
+    const gapPts = series.map(p=>[xPix(p.d), yPix(p[key])]);
+    const predPts = series.map(p=>[xPix(p.d), yPix(p.predicted)]).reverse();
+    const d = 'M '+gapPts.map(p=>p.join(',')).join(' L ')+' L '+predPts.map(p=>p.join(',')).join(' L ')+' Z';
+    svg.querySelector('#'+svg.id+'-gap').setAttribute('d', d);
+    const showAlert = day >= ALERT_DAY;
+    svg.querySelector('#'+svg.id+'-alert').setAttribute('opacity', showAlert?0.9:0);
+    svg.querySelector('#'+svg.id+'-alertlbl').setAttribute('opacity', showAlert?0.9:0);
+  }
+}
+
+/* ----- network mini-map ----- */
+const NODES = [
+  {x:24,label:'Lake'},
+  {x:98,label:'Seg 1'},
+  {x:172,label:'Seg 2'},
+  {x:250,label:'City'},
+];
+function buildNetwork(svg){
+  svg.innerHTML='';
+  for(let i=0;i<NODES.length-1;i++){
+    svg.appendChild(el('line',{x1:NODES[i].x,x2:NODES[i+1].x,y1:26,y2:26,stroke:'var(--grid)','stroke-width':3}));
+  }
+  NODES.forEach((n,i)=>{
+    const c = el('circle',{id:svg.id+'-n'+i, cx:n.x, cy:26, r:8, fill:'var(--water)'});
+    svg.appendChild(c);
+    const t = el('text',{x:n.x, y:46, 'text-anchor':'middle','font-family':'var(--mono)','font-size':8, fill:'var(--muted)'});
+    t.textContent=n.label;
+    svg.appendChild(t);
+  });
+}
+function updateNetwork(svg, seg2Level, cityLevel){
+  svg.querySelector('#'+svg.id+'-n2').setAttribute('fill', waterColor(seg2Level));
+  svg.querySelector('#'+svg.id+'-n3').setAttribute('fill', waterColor(cityLevel));
+}
+
+/* ---------- wire up ---------- */
+const chW = document.getElementById('channel-without'); chW.id='channel-without'; buildChannel(chW);
+const chI = document.getElementById('channel-with'); chI.id='channel-with'; buildChannel(chI);
+const chartW = document.getElementById('chart-without'); chartW.id='chart-without'; buildChart(chartW,false);
+const chartI = document.getElementById('chart-with'); chartI.id='chart-with'; buildChart(chartI,true);
+const netW = document.getElementById('network-without'); netW.id='network-without'; buildNetwork(netW);
+const netI = document.getElementById('network-with'); netI.id='network-with'; buildNetwork(netI);
+
+const dayNum = document.getElementById('dayNum');
+const scrub = document.getElementById('scrub');
+const lossWEl = document.getElementById('loss-without');
+const lossIEl = document.getElementById('loss-with');
+const statusW = document.getElementById('status-without').querySelector('b');
+const statusWBadge = document.getElementById('status-without');
+const statusI = document.getElementById('status-with').querySelector('b');
+const statusIBadge = document.getElementById('status-with');
+const bannerW = document.getElementById('banner-without');
+const bannerI = document.getElementById('banner-with');
+const phaseBuild = document.getElementById('phaseBuild');
+const phaseStorm = document.getElementById('phaseStorm');
+
+function interp(day){
+  const q = Q(day);
+  const lw = lossWithout(day), li = lossWith(day);
+  const levelW = level(q, A_FULL-lw);
+  const levelI = level(q, A_FULL-li);
+  const predicted = level(q, A_FULL);
+  return {q, lw, li, levelW, levelI, predicted};
+}
+
+function render(day){
+  day = Math.max(0, Math.min(TOTAL_DAYS, day));
+  dayNum.textContent = Math.round(day);
+  scrub.value = day;
+
+  const {lw, li, levelW, levelI} = interp(day);
+
+  updateChannel(chW, levelW, lw);
+  updateChannel(chI, levelI, li);
+  updateChart(chartW, day, 'actualWithout', false);
+  updateChart(chartI, day, 'actualWith', true);
+  updateNetwork(netW, levelW, levelW>=OVERFLOW?levelW:20);
+  updateNetwork(netI, levelI, levelI>=OVERFLOW?levelI:20);
+
+  lossWEl.textContent = Math.round(lw)+'%';
+  lossIEl.textContent = Math.round(li)+'%';
+
+  // status without
+  statusWBadge.className = 'badge '+statusClass(levelW);
+  statusW.textContent = levelW>=OVERFLOW ? 'Overflow' : (levelW>=WARN?'High':'Nominal (unwatched)');
+
+  // status with
+  if(day < ALERT_DAY){ statusIBadge.className='badge status-safe'; statusI.textContent='Monitoring'; }
+  else if(day < CLEAR_END){ statusIBadge.className='badge status-warn'; statusI.textContent='ALERT — clearing'; }
+  else { statusIBadge.className='badge status-safe'; statusI.textContent='Cleared ✓'; }
+
+  phaseBuild.classList.toggle('active', day < BUILD_END);
+  phaseStorm.classList.toggle('active', day >= BUILD_END);
+
+  bannerW.classList.toggle('show', day >= STORM_PEAK-1 && levelW>=OVERFLOW);
+  bannerI.classList.toggle('show', day >= STORM_PEAK+2);
+}
+
+render(0);
+
+/* ---------- playback ---------- */
+let playing=false, speed=1, raf=null, dayVal=0, lastT=null;
+const playBtn = document.getElementById('playBtn');
+const speedBtn = document.getElementById('speedBtn');
+
+function tick(t){
+  if(!playing) return;
+  if(lastT===null) lastT=t;
+  const dt = (t-lastT)/1000; lastT=t;
+  dayVal += dt * 2.2 * speed; // days per second
+  if(dayVal>=TOTAL_DAYS){ dayVal=TOTAL_DAYS; render(dayVal); playing=false; playBtn.textContent='▶ Play simulation'; return; }
+  render(dayVal);
+  raf = requestAnimationFrame(tick);
+}
+playBtn.addEventListener('click', ()=>{
+  playing = !playing;
+  if(playing){
+    playBtn.textContent='❚❚ Pause';
+    if(dayVal>=TOTAL_DAYS) dayVal=0;
+    lastT=null;
+    raf=requestAnimationFrame(tick);
+  } else {
+    playBtn.textContent='▶ Play simulation';
+    cancelAnimationFrame(raf);
+  }
+});
+document.getElementById('resetBtn').addEventListener('click', ()=>{
+  playing=false; cancelAnimationFrame(raf); dayVal=0; lastT=null;
+  playBtn.textContent='▶ Play simulation';
+  render(0);
+});
+speedBtn.addEventListener('click', ()=>{
+  speed = speed===1?2:(speed===2?4:1);
+  speedBtn.textContent = speed+'×';
+});
+scrub.addEventListener('input', (e)=>{
+  playing=false; cancelAnimationFrame(raf); playBtn.textContent='▶ Play simulation';
+  dayVal = parseFloat(e.target.value);
+  render(dayVal);
+});
+</script>
+</body>
+</html>

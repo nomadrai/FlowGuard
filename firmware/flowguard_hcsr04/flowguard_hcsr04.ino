@@ -41,8 +41,8 @@
  */
 
 // ── Pin assignments ────────────────────────────────────────────────────────
-const int TRIG_PIN = 5;   // HC-SR04 Trigger → GPIO5
-const int ECHO_PIN = 18;  // HC-SR04 Echo    → GPIO18 (via voltage divider)
+const int TRIG_PIN = 4;   // HC-SR04 Trigger → GPIO5
+const int ECHO_PIN = 5;  // HC-SR04 Echo    → GPIO18 (via voltage divider)
 
 // ── Physical constants ─────────────────────────────────────────────────────
 // Distance (cm) from sensor face to the bottom of the inlet box.
