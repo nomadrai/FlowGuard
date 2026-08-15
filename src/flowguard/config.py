@@ -56,6 +56,10 @@ BLOCKAGE_CONFIRMATION_SAMPLES = 5    # consecutive above-enter samples -> CONFIR
 CLEAR_CONFIRMATION_SAMPLES = 8       # consecutive below-exit samples -> NORMAL
 MIN_CLEARING_DURATION = 5            # min samples to stay in CLEARING before NORMAL
 RESIDUAL_WINDOW_SIZE = 20            # rolling window for residual statistics
+# Below this head the drain is barely submerged; pred_rate = q_in/LAKE_AREA
+# (large positive) while the sensor reads near-zero depth — HC-SR04 noise
+# easily exceeds the enter threshold, causing false blockage on a dry channel.
+MIN_VALID_HEAD_M = 3.0e-3            # 3 mm minimum hydraulic head to activate state machine
 
 # ------------------------------------------------------------------
 # SERIAL CONNECTION

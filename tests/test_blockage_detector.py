@@ -59,6 +59,7 @@ from flowguard.config import (
     BLOCKAGE_ENTER_THRESHOLD,
     BLOCKAGE_EXIT_THRESHOLD,
     RESIDUAL_WINDOW_SIZE,
+    MIN_VALID_HEAD_M,
 )
 
 
@@ -393,6 +394,25 @@ def test_blockage_eventually_confirmed():
 # ---------------------------------------------------------------------------
 # 9. Sensor noise does not cause false blockage
 # ---------------------------------------------------------------------------
+
+def test_dry_channel_no_false_blockage():
+    """
+    Regression: dry container with HC-SR04 noise (±3mm) must never trigger
+    blockage.  Bug: h<=0 gave pred_rate≈1.62mm/s; noise spikes in obs_rate
+    exceeded the 0.2mm/s threshold, confirming blockage with no water present.
+    The MIN_VALID_HEAD_M gate must prevent state machine advancement below
+    the minimum operating head.
+    """
+    rng = np.random.default_rng(seed=99)
+    det = BlockageDetectorState(cd=CALIBRATED_CD, q_in_m3s=INFLOW_RATE_M3S)
+    for _ in range(30):
+        # Sensor reads near container bottom; noise stays within valid range
+        dist = SENSOR_TO_BOTTOM_M - abs(rng.normal(0.0, 0.003))
+        process_reading(det, dist, dt_s=1.0)
+    assert det.state == BlockageState.NORMAL, (
+        f"Dry channel with sensor noise must stay NORMAL, got {det.state}"
+    )
+
 
 def test_sensor_noise_no_false_blockage():
     """

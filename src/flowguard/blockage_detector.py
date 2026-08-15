@@ -50,6 +50,7 @@ from config import (
     CLEAR_CONFIRMATION_SAMPLES,
     MIN_CLEARING_DURATION,
     RESIDUAL_WINDOW_SIZE,
+    MIN_VALID_HEAD_M,
     # legacy cm aliases kept for UI compatibility
     PIPE_DIAMETER_CM,
     PIPE_AREA_CM2,
@@ -250,6 +251,30 @@ def process_reading(state: BlockageDetectorState,
     q_out = expected_outflow(state.cd, h)
     pred_rate = predicted_level_rate(state.cd, h, state.q_in_m3s)
     overflow = is_overflow(water_depth)
+
+    # Below minimum operating head the drain is barely/not submerged and
+    # pred_rate = q_in/LAKE_AREA (~1.62 mm/s) while obs_rate ≈ 0 on a dry
+    # channel.  HC-SR04 noise spikes (±3 mm) easily exceed the 0.2 mm/s
+    # enter threshold, causing false BLOCKAGE_CONFIRMED with no water present.
+    # Hold NORMAL and reset the blockage counter without advancing the machine.
+    # Do NOT update _prev_depth_m: if we stored a sub-threshold depth here,
+    # the first post-gate reading would compute a large obs_rate spike from
+    # the artificially low previous depth, re-introducing false positives.
+    if h < MIN_VALID_HEAD_M:
+        state._above_enter_count = 0
+        if state.state in (BlockageState.NORMAL, BlockageState.POSSIBLE_BLOCKAGE):
+            state.state = BlockageState.NORMAL
+        reading = SensorReading(
+            sensor_distance_m=sensor_distance_m,
+            water_depth_m=water_depth,
+            hydraulic_head_m=h,
+            q_out_expected_m3s=q_out,
+            level_rate_predicted=pred_rate,
+            level_rate_observed=0.0,
+            residual=0.0,
+            overflow=overflow,
+        )
+        return reading, state.state
 
     # --- Level rate estimation ---
     if state._prev_depth_m is not None:
