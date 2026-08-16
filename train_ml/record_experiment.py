@@ -30,7 +30,6 @@ opening the live serial port — type a number for a reading, b/c/q for keys):
 
 import argparse
 import os
-import select
 import sys
 import time
 
@@ -118,14 +117,38 @@ class ExperimentLogger:
         )
 
 
+def poll_key():
+    """Return a pressed key (lowercased) or None — non-blocking, cross-platform.
+
+    Windows: msvcrt.kbhit() (select.select cannot poll stdin on Windows —
+    WinError 10038).
+    POSIX: select on sys.stdin.
+    """
+    if sys.platform == "win32":
+        import msvcrt
+
+        if msvcrt.kbhit():
+            ch = msvcrt.getwch().lower()
+            if ch in ("\x00", "\xe0"):  # arrow/function-key prefix
+                return None
+            print(ch, end="", flush=True)  # getwch does not echo the key
+            return ch
+        return None
+    import select
+
+    if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
+        return sys.stdin.readline().strip().lower()
+    return None
+
+
 def record_serial(ser, logger):
     """Live serial mode: read ESP32 CSV lines, react to b/c/q keypresses."""
     print("Live serial recording. Press  b=insert blockage  c=remove blockage  q=quit\n")
     while True:
-        if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
-            key = sys.stdin.readline().strip().lower()
+        key = poll_key()
+        if key is not None:
             if key.startswith("q"):
-                print("Quitting.")
+                print("\nQuitting.")
                 return
             logger.set_event(key[0])
         raw = ser.readline()
