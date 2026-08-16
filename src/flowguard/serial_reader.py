@@ -1,11 +1,12 @@
 """
 serial_reader.py — runs continuously in its own terminal window, separate
-from the dashboard. Reads live CSV from the ESP32, computes blockage % for
-every valid reading using the SAME shared config as the dashboard, and logs
-each result to the database. The dashboard auto-refreshes and displays
-whatever the latest logged reading is — this is what makes it "live":
-place your finger over the pipe -> this script picks up the next reading
--> computes and logs blockage -> dashboard shows it within ~1-2 seconds.
+from the dashboard. Reads live CSV from the ESP32, computes the RATE-BASED
+blockage status for every valid reading using the SAME shared config as the
+dashboard, and logs each result to the database. The dashboard auto-refreshes
+and displays whatever the latest logged reading is — this is what makes it
+"live": place your finger over the pipe -> this script picks up the next
+reading -> computes and logs the verdict -> dashboard shows it within
+~1-2 seconds.
 
 The printed status is RATE-BASED: it compares the current water-level rise
 rate against the recently learned normal (rainfall) rise rate and flags only
@@ -118,10 +119,9 @@ def main():
         base_str = f"{base:.4f}" if base is not None else "—"
 
         area_str = f"{area:.3f}" if area is not None else "N/A"
-        pct_str = f"{pct:.1f}%" if pct is not None else "N/A"
 
         print(f"[t={t_ms:.0f}ms] distance={distance_cm:.2f}cm | water={h:.2f}cm | "
-              f"area={area_str}cm^2 | blockage={pct_str} | {status} "
+              f"area={area_str}cm^2 | {status} "
               f"(rise {cur_str} vs baseline {base_str} cm/s | {reason})")
 
         # Log every reading — the dashboard reads the latest one on each auto-refresh

@@ -23,7 +23,7 @@ from storage import (
 )
 from config import (
     PIPE_AREA_CM2, INLET_BOX_BASE_AREA_CM2, CALIBRATED_CD,
-    DEFAULT_INFLOW_Q_CM3S, BLOCKAGE_ALERT_THRESHOLD_PCT, NODE_NAME,
+    DEFAULT_INFLOW_Q_CM3S, NODE_NAME,
 )
 
 st.set_page_config(page_title="FlowGuard — Nagpur Flood Early Warning", layout="wide", initial_sidebar_state="collapsed")
@@ -212,10 +212,6 @@ def _fmt(value, fmt):
     return fmt % value if value is not None else "—"
 
 
-def _pct_state(pct):
-    return "alert" if pct is not None and pct > BLOCKAGE_ALERT_THRESHOLD_PCT else "ok"
-
-
 def compute_rate_verdict(history_df):
     """
     RATE-BASED blockage verdict (the primary detection signal) from the
@@ -293,21 +289,15 @@ def render_panel_head(title, tag, sub=None):
 
 
 def render_kpis(current=None):
-    """Four-number monitoring strip: blockage %, water height, effective area, days to critical."""
+    """Three-number monitoring strip: water height, effective area, days to critical."""
     if current:
-        pct, height, area = current.get("pct"), current.get("height"), current.get("area")
+        height, area = current.get("height"), current.get("area")
         forecast, ts, ml = current.get("forecast"), current.get("ts"), current.get("ml_confirmed")
     else:
-        pct = height = area = forecast = ts = ml = None
-    pct_cls = {"ok": "fg-val-green", "alert": "fg-val-red"}[_pct_state(pct)]
+        height = area = forecast = ts = ml = None
     ml_sub = "ML CONFIRMED" if ml else "ML UNCONFIRMED" if ml is not None else "no baseline yet"
     st.markdown(f"""
-    <div class="fg-kpis">
-        <div class="fg-stat">
-            <div class="fg-stat-lbl">Blockage estimate</div>
-            <div class="fg-stat-val {pct_cls}">{_fmt(pct, "%.1f")}<span class="fg-unit">%</span></div>
-            <div class="fg-stat-sub">physics estimate · verdict is rate-based</div>
-        </div>
+    <div class="fg-kpis fg-sims">
         <div class="fg-stat">
             <div class="fg-stat-lbl">Water height</div>
             <div class="fg-stat-val fg-val-cyan">{_fmt(height, "%.2f")}<span class="fg-unit">cm</span></div>
@@ -328,8 +318,7 @@ def render_kpis(current=None):
 
 
 def render_reading_card(current, source_label):
-    """The blockage verdict: status dot + headline estimate + the physical facts behind it."""
-    pct = current.get("pct")
+    """The blockage verdict: status dot + the rate-based facts behind it."""
     blocked = bool(current.get("blocked"))
     state_cls = "alert" if blocked else "ok"
     status_text = "BLOCKAGE DETECTED" if blocked else "CHANNEL CLEAR"
@@ -348,8 +337,6 @@ def render_reading_card(current, source_label):
             <span class="fg-status-text">{status_text}</span>
             <span class="fg-src">{source_label}</span>
         </div>
-        <div class="fg-big-val">{_fmt(pct, "%.1f")}<span class="fg-unit">%</span></div>
-        <div class="fg-big-lbl">Blockage estimate (physics)</div>
         <div class="fg-facts">
             <div class="fg-fact"><span class="k">Rise rate</span><span class="v">{rise_text} cm/reading</span></div>
             <div class="fg-fact"><span class="k">Normal rise rate</span><span class="v">{baseline_text} cm/reading</span></div>
@@ -367,17 +354,8 @@ def render_reading_card(current, source_label):
 
 def render_charts(hist):
     ts = hist.iloc[::-1].reset_index(drop=True)
-    col1, col2 = st.columns([1.6, 1], gap="medium")
-    with col1:
-        st.markdown('<div class="fg-chart-lbl">Blockage estimate over readings</div>', unsafe_allow_html=True)
-        line = pd.DataFrame({
-            "Blockage estimate (%)": ts["blockage_pct"],
-            f"Alert threshold ({BLOCKAGE_ALERT_THRESHOLD_PCT:.0f}%)": BLOCKAGE_ALERT_THRESHOLD_PCT,
-        })
-        st.line_chart(line, color=["#E8A94C", "#E07067"], height=235)
-    with col2:
-        st.markdown('<div class="fg-chart-lbl">Water level (cm)</div>', unsafe_allow_html=True)
-        st.line_chart(ts[["water_level_cm"]], color=["#5FB8D9"], height=235)
+    st.markdown('<div class="fg-chart-lbl">Water level (cm)</div>', unsafe_allow_html=True)
+    st.line_chart(ts[["water_level_cm"]], color=["#5FB8D9"], height=235)
 
 
 def render_empty_state(live=True):
@@ -434,7 +412,6 @@ with st.sidebar:
     <div class="fg-geo"><span class="k">Inlet box base</span><span class="v">{INLET_BOX_BASE_AREA_CM2:.0f} cm²</span></div>
     <div class="fg-geo"><span class="k">Calibrated Cd</span><span class="v">{CALIBRATED_CD}</span></div>
     <div class="fg-geo"><span class="k">Assumed inflow</span><span class="v">{DEFAULT_INFLOW_Q_CM3S:.0f} mL/s</span></div>
-    <div class="fg-geo"><span class="k">Alert threshold</span><span class="v">{BLOCKAGE_ALERT_THRESHOLD_PCT:.0f}%</span></div>
     """, unsafe_allow_html=True)
 
     st.markdown('<div class="fg-sb-label">Recalibration</div>', unsafe_allow_html=True)
@@ -499,7 +476,6 @@ if live_mode:
                                  verdict["verdict"] == "BLOCKAGE_DETECTED")
 
         current = {
-            "pct": latest["blockage_pct"],
             "height": latest["water_level_cm"],
             "area": latest["calculated_area_cm2"],
             "forecast": forecast,
@@ -539,7 +515,6 @@ else:
         verdict = compute_rate_verdict(hist)
         ml_confirmed, forecast = compute_ml_and_forecast(hist)
         current = {
-            "pct": latest["blockage_pct"],
             "height": latest["water_level_cm"],
             "area": latest["calculated_area_cm2"],
             "forecast": forecast,
@@ -570,7 +545,7 @@ else:
                                      verdict["verdict"] == "BLOCKAGE_DETECTED")
 
             st.session_state["last_reading"] = {
-                "pct": pct, "height": live_h, "area": area,
+                "height": live_h, "area": area,
                 "forecast": forecast, "ml_confirmed": ml_confirmed,
                 "ts": history.iloc[0]["timestamp"],
                 "blocked": verdict["verdict"] == "BLOCKAGE_DETECTED",
@@ -715,18 +690,18 @@ with tabs[1]:
     if read_df.empty:
         st.markdown('<div class="fg-note">No readings logged yet — the physical node section above feeds this table.</div>', unsafe_allow_html=True)
     else:
+        read_disp = read_df.drop(columns=["id", "node", "blockage_pct"])
         st.dataframe(
-            read_df.drop(columns=["id", "node"]),
+            read_disp,
             hide_index=True, width="stretch", height=400,
             column_config={
                 "timestamp": st.column_config.TextColumn("Timestamp"),
                 "water_level_cm": st.column_config.NumberColumn("Water level (cm)", format="%.2f"),
                 "inflow_q_cm3s": st.column_config.NumberColumn("Inflow (mL/s)", format="%.1f"),
                 "calculated_area_cm2": st.column_config.NumberColumn("Effective area (cm²)", format="%.4f"),
-                "blockage_pct": st.column_config.NumberColumn("Blockage (%)", format="%.2f"),
             },
         )
-        st.download_button("Export CSV", read_df.to_csv(index=False).encode("utf-8"),
+        st.download_button("Export CSV", read_disp.to_csv(index=False).encode("utf-8"),
                            "flowguard_readings.csv", "text/csv", key="dl_read")
 
 with tabs[2]:
@@ -735,17 +710,17 @@ with tabs[2]:
     else:
         ev_disp = ev_df.copy()
         ev_disp["ml_confirmed"] = ev_disp["ml_confirmed"].map({1: "ML CONFIRMED", 0: "single reading"}).fillna("—")
+        ev_disp = ev_disp.drop(columns=["id", "node", "blockage_pct"])
         st.dataframe(
-            ev_disp.drop(columns=["id", "node"]),
+            ev_disp,
             hide_index=True, width="stretch", height=400,
             column_config={
                 "timestamp": st.column_config.TextColumn("Timestamp"),
-                "blockage_pct": st.column_config.NumberColumn("Blockage (%)", format="%.2f"),
                 "ml_confirmed": st.column_config.TextColumn("ML confirmation"),
                 "forecast_days_to_critical": st.column_config.NumberColumn("Days to critical", format="%.1f"),
             },
         )
-        st.download_button("Export CSV", ev_df.to_csv(index=False).encode("utf-8"),
+        st.download_button("Export CSV", ev_disp.to_csv(index=False).encode("utf-8"),
                            "flowguard_blockage_events.csv", "text/csv", key="dl_ev")
 
 with tabs[3]:
