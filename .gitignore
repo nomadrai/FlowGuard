@@ -51,6 +51,14 @@ dist/
 *.egg-info/
 .eggs/
 
+# ML training artifacts (train_ml/) — experiment CSVs, trained models, plots
+#train_ml/data/*
+#!train_ml/data/.gitkeep
+#train_ml/models/*
+#!train_ml/models/.gitkeep
+#train_ml/predictions/
+#train_ml/*.png
+
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb

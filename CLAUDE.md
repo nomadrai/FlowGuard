@@ -120,6 +120,17 @@ FlowGuard/
 │   ├── flood_risk_analysis.py      # Citywide risk assessment
 │   ├── flood_model_demo.py         # Demo visualization
 │   └── convert_overpass_to_geojson.py  # OSM data processing
+├── train_ml/                       # ML training pipeline (separate from live path)
+│   ├── README.md                   # Experiment recording + training/testing guide
+│   ├── record_experiment.py        # Record experiments 1-16 (b/c event keys)
+│   ├── load_experiments.py         # CSV loader + state/event derivation
+│   ├── expected_rate.py            # expected_rise_rate = f(water_depth)
+│   ├── features.py                 # Per-reading rate/deviation features
+│   ├── train.py                    # RandomForest + IsolationForest training
+│   ├── evaluate.py                 # Leave-one-experiment-out evaluation
+│   ├── predict_experiment.py       # Test an unseen experiment (no retraining)
+│   ├── data/                       # experiment_01..16.csv (git-ignored)
+│   └── models/                     # joblib artifacts (git-ignored)
 ├── data/                           # Data directory (Git-ignored except structure)
 │   ├── nagpur_drainage/            # GeoJSON, DEM, simulation outputs
 │   └── flowguard_history.db        # SQLite database (not in Git)
@@ -728,6 +739,10 @@ pip install -e ".[analysis]"
 ---
 
 ## Changelog
+
+**v1.2.0 (2026-08-16):**
+- Added `train_ml/` — a self-contained ML training pipeline separate from the live sensor path, dashboard, and SQLite audit trail: 16-experiment recording protocol (`record_experiment.py`, `b`/`c` event keys → `BLOCKAGE_INSERTED`/`BLOCKAGE_REMOVED`), depth-dependent expected-rate model (`expected_rise_rate = f(water_depth)` learned from experiments 1-4), RandomForestClassifier main model + IsolationForest baseline, leave-one-experiment-out whole-experiment evaluation, and untrained prediction of unseen experiments. See `train_ml/README.md`
+- Added `pyserial>=3.5` to core dependencies (was undeclared) and `joblib` to the analysis extras; `train_ml/data|models|predictions` and plots are git-ignored
 
 **v1.1.0 (2026-08-16):**
 - RATE-BASED blockage detection: `detect_blockage_from_rise()` compares the current water-level rise rate against the learned normal rainfall rise rate; a falling level means the blockage has been cleared. Absolute water level no longer decides verdicts

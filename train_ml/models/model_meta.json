@@ -1,0 +1,11 @@
+{
+  "feature_columns": [
+    "water_depth",
+    "rate",
+    "smoothed_rate",
+    "rate_change",
+    "expected_rate",
+    "rate_deviation"
+  ],
+  "random_state": 42
+}
