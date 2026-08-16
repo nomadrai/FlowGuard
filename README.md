@@ -88,7 +88,7 @@ FlowGuard/
 ├── .venv/                           # Python virtual environment (not in Git)
 ├── .gitignore
 ├── pyproject.toml                   # Project configuration
-├── README.md                        # This file
+├── README.md                        # Setup Guide
 └── CLAUDE.md                        # AI agent operating guide
 ```
 
