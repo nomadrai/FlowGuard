@@ -45,11 +45,16 @@ Where:
 
 ### Blockage Detection Logic
 
-1. **Expected flow (clean pipe):** Q_expected = Cd × A_pipe × √(2gh), where A_pipe = 2.8353 cm²
-2. **Observed flow (current reading):** Q_observed = inflow rate entered in dashboard sidebar (mL/s)
-3. **Blockage percentage:** (Q_expected - Q_observed) / Q_expected × 100%
+**Detection is RATE-BASED, never level-based.** A blockage is NOT "water above height X" — it is "water rising much faster than the recent normal rainfall rise rate". The system learns the normal rise rate from history and flags only unusual accelerations above it.
 
-Higher water height with same inflow → obstruction reducing effective pipe area → blockage detected.
+1. **Normal rise rate (baseline):** median of rolling-window slopes of water level over the earlier history — the learned "rainfall" behaviour (assumed roughly constant during an experiment).
+2. **Current rise rate:** least-squares slope of the most recent ~10 readings (windows average out the HC-SR04's ±0.3 cm noise; single reading-to-reading diffs are never used).
+3. **Verdict:**
+   - `rise_rate > normal_rise_rate + max(abs_margin, multiplier × normal_rise_rate)` → **Blockage detected**
+   - `rise_rate` back near the normal rate (hysteresis) → **Clear**
+   - `rise_rate ≤ 0` (water level falling) → **Clear** (blockage has been cleared/opened)
+
+The orifice equation (Q = Cd × A × √(2gh)) is still used for **calibration** (Cd) and for the **blockage-% physics estimate** shown in the KPIs and audit trail — but it never decides the verdict. `ReferenceHeightTracker` re-baselines the reference water level only on genuine decreases (blockage cleared), never on rises (a possible blockage).
 
 ### ML Confirmation Layer
 
@@ -58,10 +63,10 @@ Higher water height with same inflow → obstruction reducing effective pipe are
 **Purpose:** Filter sensor noise and transient fluctuations from genuine blockage trends.
 
 **How it works:**
-- Trains on rolling window of recent blockage % readings
-- Flags sustained rising trends as anomalies
+- Trains on rolling windows of recent **water-level/rate features** (`extract_rate_features`: rise rate, acceleration, current-rate vs normal-rate ratio)
+- Flags sustained accelerating-rise patterns as anomalies
 - Single noisy spikes are NOT flagged
-- Requires ~15-20 readings minimum for reliable operation
+- Requires a real baseline: ~20 clean windows (~200 readings at 10 readings/window) before it activates; below that, ML stays "unconfirmed" and the rate verdict alone drives detection
 
 **Why Isolation Forest?**
 - Unsupervised (no labeled blockage training data needed)
@@ -137,8 +142,10 @@ FlowGuard/
 
 **blockage_detector.py:**
 - `calibrate_cd()`: Field calibration from pour experiment measurements
-- `compute_blockage_pct()`: Core orifice equation calculation
-- `ml_confirm_blockage()`: Isolation Forest anomaly detection
+- `calculate_area()` / `blockage_percent()`: Orifice equation — the blockage-% physics estimate (KPIs + audit only)
+- `detect_blockage_from_rise()`: RATE-BASED verdict — current rise rate vs learned normal rainfall rise rate
+- `ReferenceHeightTracker`: re-baselines the reference level only on genuine decreases (blockage cleared)
+- `extract_rate_features()` / `BlockageAnomalyDetector`: Isolation Forest on water-level/rate behaviour
 - `forecast_days_to_critical()`: Linear trend extrapolation
 
 **network_simulation.py:**
@@ -538,7 +545,7 @@ git status                  # Check for untracked files
 
 ### Software Limitations
 
-- **ML requires baseline:** 15-20 readings minimum for Isolation Forest to work
+- **ML requires baseline:** ~20 clean windows (~200 readings at 10 readings/window) for Isolation Forest to confirm; below that, ML stays unconfirmed and the rate verdict alone drives detection
 - **Network simulation is simplified:** Doesn't model pipe capacity constraints, surcharge, or backwater effects
 - **Database is local:** SQLite not suitable for multi-node distributed deployment
 - **No real-time alerts:** Dashboard must be manually monitored
@@ -721,6 +728,12 @@ pip install -e ".[analysis]"
 ---
 
 ## Changelog
+
+**v1.1.0 (2026-08-16):**
+- RATE-BASED blockage detection: `detect_blockage_from_rise()` compares the current water-level rise rate against the learned normal rainfall rise rate; a falling level means the blockage has been cleared. Absolute water level no longer decides verdicts
+- Added `ReferenceHeightTracker` (re-baselines only on genuine decreases) and `extract_rate_features()` (Isolation Forest now analyses water-level/rate behaviour)
+- Dashboard verdict card, serial_reader status line, and blockage-event log now driven by the rate verdict; orifice blockage-% kept as the physics estimate for KPIs and audit trail
+- Fixed test-suite import paths; new rate-detection tests
 
 **v1.0.0 (2024-08-12):**
 - Initial repository restructuring

@@ -7,6 +7,7 @@ import os
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'flowguard'))
 
 from flowguard import blockage_detector
 import numpy as np
@@ -104,6 +105,71 @@ def test_forecast_days_to_critical():
     assert 0 < days < 30, f"Forecast of {days} days seems unreasonable"
 
 
+def _levels_from_rates(rates, start=0.0):
+    """Water levels (cm) built from consecutive rise rates (cm per reading)."""
+    levels = [start]
+    for r in rates:
+        levels.append(levels[-1] + r)
+    return levels
+
+
+def test_rate_based_detection_clear_on_normal_rise():
+    """Steady normal rise (+1 -> +1.1 -> +1 cm/reading) must stay CLEAR."""
+    levels = _levels_from_rates([1.0, 1.1, 1.0, 1.0, 1.1, 1.0, 1.0, 1.05])
+    r = blockage_detector.detect_blockage_from_rise(
+        levels, min_readings=5, recent_window=3, baseline_window=3
+    )
+    assert r["verdict"] == "CLEAR", r
+
+
+def test_rate_based_detection_blockage_on_acceleration():
+    """A sudden jump in rise rate (+1 -> +2.5 -> +3 cm/reading) is a blockage."""
+    levels = _levels_from_rates([1.0, 1.1, 1.0, 1.0, 1.1, 1.0, 2.5, 3.0, 3.0])
+    r = blockage_detector.detect_blockage_from_rise(
+        levels, min_readings=5, recent_window=3, baseline_window=3
+    )
+    assert r["verdict"] == "BLOCKAGE_DETECTED", r
+
+
+def test_rate_based_detection_clear_when_water_falls():
+    """A falling water level (+3 -> +2 -> +0.5 -> -0.5) means the blockage
+    has been cleared — must show CLEAR again."""
+    levels = _levels_from_rates([1.0, 1.0, 1.0, 3.0, 3.0, 2.0, 0.5, -0.5, -0.5])
+    r = blockage_detector.detect_blockage_from_rise(
+        levels, min_readings=5, recent_window=3, baseline_window=3
+    )
+    assert r["verdict"] == "CLEAR", r
+
+
+def test_rate_based_detection_ignores_absolute_level():
+    """The SAME rise-rate pattern at very different absolute water levels must
+    give the SAME verdict — detection is about rate, never absolute height."""
+    rates = [1.0, 1.0, 1.0, 3.0, 3.0]
+    r_low = blockage_detector.detect_blockage_from_rise(
+        _levels_from_rates(rates, start=2.0), min_readings=5, recent_window=2, baseline_window=2
+    )
+    r_high = blockage_detector.detect_blockage_from_rise(
+        _levels_from_rates(rates, start=20.0), min_readings=5, recent_window=2, baseline_window=2
+    )
+    assert r_low["verdict"] == "BLOCKAGE_DETECTED", r_low
+    assert r_high["verdict"] == "BLOCKAGE_DETECTED", r_high
+
+
+def test_rate_based_detection_insufficient_data_is_clear():
+    """Too few readings to learn the normal rise rate must never alarm."""
+    r = blockage_detector.detect_blockage_from_rise([1.0, 1.1, 1.2, 1.3])
+    assert r["verdict"] == "CLEAR", r
+
+
+def test_reference_height_tracker_never_rebaselines_on_rise():
+    """A water-level RISE (a possible blockage) must never move the reference."""
+    tracker = blockage_detector.ReferenceHeightTracker(initial_fixed_height_cm=20.0)
+    tracker.update(20.0)
+    assert tracker.update(21.5) is None
+    assert tracker.fixed_height == 20.0
+    assert not tracker.decrease_detected
+
+
 if __name__ == "__main__":
     print("Running blockage_detector tests...")
     test_calibrate_cd()
@@ -117,5 +183,23 @@ if __name__ == "__main__":
     
     test_forecast_days_to_critical()
     print("✓ test_forecast_days_to_critical passed")
-    
+
+    test_rate_based_detection_clear_on_normal_rise()
+    print("✓ test_rate_based_detection_clear_on_normal_rise passed")
+
+    test_rate_based_detection_blockage_on_acceleration()
+    print("✓ test_rate_based_detection_blockage_on_acceleration passed")
+
+    test_rate_based_detection_clear_when_water_falls()
+    print("✓ test_rate_based_detection_clear_when_water_falls passed")
+
+    test_rate_based_detection_ignores_absolute_level()
+    print("✓ test_rate_based_detection_ignores_absolute_level passed")
+
+    test_rate_based_detection_insufficient_data_is_clear()
+    print("✓ test_rate_based_detection_insufficient_data_is_clear passed")
+
+    test_reference_height_tracker_never_rebaselines_on_rise()
+    print("✓ test_reference_height_tracker_never_rebaselines_on_rise passed")
+
     print("\nAll tests passed!")

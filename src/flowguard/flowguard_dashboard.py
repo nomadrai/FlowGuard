@@ -6,12 +6,15 @@ trail into one control-room dashboard.
 Run: streamlit run flowguard_dashboard.py
 """
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 from blockage_detector import (
     calibrate_cd, calculate_area, blockage_percent,
-    extract_window_features, BlockageAnomalyDetector, forecast_days_to_critical,
+    extract_rate_features,
+    BlockageAnomalyDetector, forecast_days_to_critical,
+    detect_blockage_from_rise, RATE_RECENT_WINDOW,
 )
 from network_simulation import WaterNetwork, generate_rainfall_pulse
 from storage import (
@@ -24,6 +27,11 @@ from config import (
 )
 
 st.set_page_config(page_title="FlowGuard — Nagpur Flood Early Warning", layout="wide", initial_sidebar_state="collapsed")
+
+# ML confirmation only activates once this many clean baseline windows exist
+# (~200 readings at 10 readings/window) — Isolation Forest needs a real
+# baseline to learn the normal rise-rate range.
+ML_BASELINE_WINDOWS_MIN = 20
 
 # ============================================================
 # THEME — control-room instrumentation palette (dark, dim-room
@@ -208,29 +216,64 @@ def _pct_state(pct):
     return "alert" if pct is not None and pct > BLOCKAGE_ALERT_THRESHOLD_PCT else "ok"
 
 
+def compute_rate_verdict(history_df):
+    """
+    RATE-BASED blockage verdict (the primary detection signal) from the
+    readings history (newest first). Learns the normal rainfall rise rate
+    from the earlier history and flags only unusual accelerations above it;
+    a falling water level means the blockage has been cleared/opened.
+    The absolute water level never decides the verdict.
+    """
+    asc = history_df.iloc[::-1]  # oldest -> newest
+    levels = [float(h) for h in asc["water_level_cm"].tolist() if h is not None]
+    return detect_blockage_from_rise(levels)
+
+
 def compute_ml_and_forecast(history_df):
     """Shared logic: given the readings history, compute ML confirmation + forecast for the LATEST reading."""
-    recent_pcts = history_df["blockage_pct"].head(5).tolist()[::-1]  # oldest to newest
+    # ML confirmation now analyses WATER-LEVEL RATE BEHAVIOUR (rise rate,
+    # acceleration, rate vs the learned normal) instead of absolute blockage %.
+    levels = history_df["water_level_cm"].tolist()[::-1]  # oldest -> newest
     ml_confirmed = False
-    forecast = None
-    if len(recent_pcts) >= 5:
-        features = extract_window_features(recent_pcts)
-        baseline_pool = history_df["blockage_pct"].tolist()
-        if len(baseline_pool) >= 15:
-            baseline_windows = [baseline_pool[i:i + 5] for i in range(0, len(baseline_pool) - 5, 5)]
-            baseline_features = [extract_window_features(w) for w in baseline_windows if len(w) == 5]
-            if len(baseline_features) >= 5:
+    if len(levels) >= RATE_RECENT_WINDOW * 2:
+        baseline_pool = levels[:-RATE_RECENT_WINDOW]
+        baseline_windows = [
+            baseline_pool[i:i + RATE_RECENT_WINDOW]
+            for i in range(0, len(baseline_pool) - RATE_RECENT_WINDOW, RATE_RECENT_WINDOW)
+        ]
+        baseline_windows = [w for w in baseline_windows if len(w) == RATE_RECENT_WINDOW]
+        # Isolation Forest needs a REAL baseline to learn the normal rise-rate
+        # range — with fewer windows its decision boundary is coin-flipping.
+        # Below the minimum, ML stays "unconfirmed" (the rate verdict alone
+        # still drives detection).
+        if len(baseline_windows) >= ML_BASELINE_WINDOWS_MIN:
+            # Learn the normal rainfall rise rate from the clean history —
+            # the main ML signal is the CURRENT rate divided by it.
+            baseline_rate = float(np.median(
+                [np.mean(np.diff(w)) for w in baseline_windows]
+            ))
+            baseline_features = [
+                extract_rate_features(w, baseline_rate=baseline_rate)
+                for w in baseline_windows
+            ]
+            if len(baseline_features) >= ML_BASELINE_WINDOWS_MIN:
                 detector = BlockageAnomalyDetector(contamination=0.1)
                 detector.fit(baseline_features)
-                ml_confirmed = detector.is_confirmed_anomaly(features)
+                recent_features = extract_rate_features(
+                    levels[-RATE_RECENT_WINDOW:], baseline_rate=baseline_rate
+                )
+                ml_confirmed = detector.is_confirmed_anomaly(recent_features)
+    recent_pcts = history_df["blockage_pct"].head(5).tolist()[::-1]  # oldest to newest
+    forecast = None
+    if len(recent_pcts) >= 5:
         days = list(range(len(recent_pcts)))
         forecast = forecast_days_to_critical(recent_pcts, days, critical_threshold_pct=50.0)
     return ml_confirmed, forecast
 
 
-def maybe_log_blockage_event(reading_id, pct, ml_confirmed, forecast):
+def maybe_log_blockage_event(reading_id, pct, ml_confirmed, forecast, blocked):
     """Log a blockage event only when the reading is new — prevents duplicate rows on every auto-refresh."""
-    if pct is not None and pct > BLOCKAGE_ALERT_THRESHOLD_PCT:
+    if blocked and pct is not None:
         if st.session_state.get("last_logged_reading_id") != reading_id:
             log_blockage_event(NODE_NAME, pct, int(ml_confirmed), forecast)
             st.session_state["last_logged_reading_id"] = reading_id
@@ -263,7 +306,7 @@ def render_kpis(current=None):
         <div class="fg-stat">
             <div class="fg-stat-lbl">Blockage estimate</div>
             <div class="fg-stat-val {pct_cls}">{_fmt(pct, "%.1f")}<span class="fg-unit">%</span></div>
-            <div class="fg-stat-sub">alert at {BLOCKAGE_ALERT_THRESHOLD_PCT:.0f}%</div>
+            <div class="fg-stat-sub">physics estimate · verdict is rate-based</div>
         </div>
         <div class="fg-stat">
             <div class="fg-stat-lbl">Water height</div>
@@ -287,11 +330,17 @@ def render_kpis(current=None):
 def render_reading_card(current, source_label):
     """The blockage verdict: status dot + headline estimate + the physical facts behind it."""
     pct = current.get("pct")
-    state_cls = _pct_state(pct)
-    status_text = "BLOCKAGE DETECTED" if state_cls == "alert" else "CHANNEL CLEAR"
+    blocked = bool(current.get("blocked"))
+    state_cls = "alert" if blocked else "ok"
+    status_text = "BLOCKAGE DETECTED" if blocked else "CHANNEL CLEAR"
     ml_text = "ML CONFIRMED" if current.get("ml_confirmed") else "not yet confirmed"
     forecast = current.get("forecast")
     forecast_text = f"{forecast:.1f} days" if forecast is not None else "insufficient trend data"
+    rise = current.get("rise_rate")
+    baseline = current.get("baseline_rate")
+    rise_text = f"{rise:.4f}" if rise is not None else "—"
+    baseline_text = f"{baseline:.4f}" if baseline is not None else "—"
+    reason_text = current.get("verdict_reason", "—")
     st.markdown(f"""
     <div class="fg-card {state_cls}">
         <div class="fg-card-head">
@@ -300,8 +349,11 @@ def render_reading_card(current, source_label):
             <span class="fg-src">{source_label}</span>
         </div>
         <div class="fg-big-val">{_fmt(pct, "%.1f")}<span class="fg-unit">%</span></div>
-        <div class="fg-big-lbl">Blockage estimate</div>
+        <div class="fg-big-lbl">Blockage estimate (physics)</div>
         <div class="fg-facts">
+            <div class="fg-fact"><span class="k">Rise rate</span><span class="v">{rise_text} cm/reading</span></div>
+            <div class="fg-fact"><span class="k">Normal rise rate</span><span class="v">{baseline_text} cm/reading</span></div>
+            <div class="fg-fact"><span class="k">Detection basis</span><span class="v">{reason_text}</span></div>
             <div class="fg-fact"><span class="k">Effective area</span><span class="v">{_fmt(current.get("area"), "%.4f")} cm²</span></div>
             <div class="fg-fact"><span class="k">Clean pipe area</span><span class="v">{PIPE_AREA_CM2:.4f} cm²</span></div>
             <div class="fg-fact"><span class="k">Assumed inflow</span><span class="v">{DEFAULT_INFLOW_Q_CM3S:.0f} mL/s</span></div>
@@ -428,7 +480,7 @@ st.markdown(f"""
 render_panel_head(
     "Physical Node",
     "PHYSICAL NODE",
-    "Orifice equation converts live water height into effective channel area",
+    "Rate-based verdict: current water-level rise vs the learned normal rainfall rise rate; orifice equation estimates effective area",
 )
 
 if live_mode:
@@ -441,8 +493,10 @@ if live_mode:
             return
 
         latest = hist.iloc[0]
+        verdict = compute_rate_verdict(hist)
         ml_confirmed, forecast = compute_ml_and_forecast(hist)
-        maybe_log_blockage_event(int(latest["id"]), latest["blockage_pct"], ml_confirmed, forecast)
+        maybe_log_blockage_event(int(latest["id"]), latest["blockage_pct"], ml_confirmed, forecast,
+                                 verdict["verdict"] == "BLOCKAGE_DETECTED")
 
         current = {
             "pct": latest["blockage_pct"],
@@ -451,6 +505,10 @@ if live_mode:
             "forecast": forecast,
             "ml_confirmed": ml_confirmed,
             "ts": latest["timestamp"],
+            "blocked": verdict["verdict"] == "BLOCKAGE_DETECTED",
+            "rise_rate": verdict["current_rate"],
+            "baseline_rate": verdict["baseline_rate"],
+            "verdict_reason": verdict["reason"],
         }
         st.markdown(f"""
         <div class="fg-feed-line">
@@ -478,6 +536,7 @@ else:
     current = st.session_state.get("last_reading")
     if current is None and not hist.empty:
         latest = hist.iloc[0]
+        verdict = compute_rate_verdict(hist)
         ml_confirmed, forecast = compute_ml_and_forecast(hist)
         current = {
             "pct": latest["blockage_pct"],
@@ -486,6 +545,10 @@ else:
             "forecast": forecast,
             "ml_confirmed": ml_confirmed,
             "ts": latest["timestamp"],
+            "blocked": verdict["verdict"] == "BLOCKAGE_DETECTED",
+            "rise_rate": verdict["current_rate"],
+            "baseline_rate": verdict["baseline_rate"],
+            "verdict_reason": verdict["reason"],
         }
 
     render_kpis(current)
@@ -501,13 +564,19 @@ else:
             log_reading(NODE_NAME, live_h, DEFAULT_INFLOW_Q_CM3S, area, pct)
 
             history = get_readings(NODE_NAME)
+            verdict = compute_rate_verdict(history)
             ml_confirmed, forecast = compute_ml_and_forecast(history)
-            maybe_log_blockage_event(int(history.iloc[0]["id"]), pct, ml_confirmed, forecast)
+            maybe_log_blockage_event(int(history.iloc[0]["id"]), pct, ml_confirmed, forecast,
+                                     verdict["verdict"] == "BLOCKAGE_DETECTED")
 
             st.session_state["last_reading"] = {
                 "pct": pct, "height": live_h, "area": area,
                 "forecast": forecast, "ml_confirmed": ml_confirmed,
                 "ts": history.iloc[0]["timestamp"],
+                "blocked": verdict["verdict"] == "BLOCKAGE_DETECTED",
+                "rise_rate": verdict["current_rate"],
+                "baseline_rate": verdict["baseline_rate"],
+                "verdict_reason": verdict["reason"],
             }
             st.rerun()
     with col2:
@@ -662,7 +731,7 @@ with tabs[1]:
 
 with tabs[2]:
     if ev_df.empty:
-        st.markdown('<div class="fg-note">No confirmed blockage events yet — events appear here when blockage % stays above the alert threshold.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="fg-note">No confirmed blockage events yet — events appear here when the rise rate is flagged far above the normal rainfall rise rate.</div>', unsafe_allow_html=True)
     else:
         ev_disp = ev_df.copy()
         ev_disp["ml_confirmed"] = ev_disp["ml_confirmed"].map({1: "ML CONFIRMED", 0: "single reading"}).fillna("—")

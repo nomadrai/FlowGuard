@@ -7,6 +7,10 @@ whatever the latest logged reading is — this is what makes it "live":
 place your finger over the pipe -> this script picks up the next reading
 -> computes and logs blockage -> dashboard shows it within ~1-2 seconds.
 
+The printed status is RATE-BASED: it compares the current water-level rise
+rate against the recently learned normal (rainfall) rise rate and flags only
+unusual accelerations. The absolute water level never decides the status.
+
 Run this BEFORE opening the dashboard, and leave it running throughout
 your demo, in its own terminal window.
 
@@ -16,14 +20,21 @@ Usage:
 """
 
 import time
+from collections import deque
+
 import serial
 
-from blockage_detector import calculate_area, blockage_percent
+from blockage_detector import (
+    calculate_area, blockage_percent, detect_blockage_from_rise,
+    ReferenceHeightTracker,
+)
 from storage import log_reading
 from config import (
     SERIAL_PORT, SERIAL_BAUD, PIPE_AREA_CM2, CALIBRATED_CD,
     DEFAULT_INFLOW_Q_CM3S, NODE_NAME,
 )
+
+RATE_HISTORY_LEN = 60  # readings kept in memory for rise-rate estimation
 
 
 def parse_line(line):
@@ -62,6 +73,12 @@ def main():
     print("Connected. Reading live data — pour water and try blocking the pipe.\n")
     print("Reminder: pour at roughly the rate set in config.py (DEFAULT_INFLOW_Q_CM3S) for accurate readings.\n")
 
+    # Streaming state for the RATE-BASED verdict: the recent water-level
+    # history (rise rates are computed over windows) and the reference-height
+    # tracker (a falling level = the blockage has been cleared/opened).
+    rate_history = deque(maxlen=RATE_HISTORY_LEN)
+    ref_tracker = ReferenceHeightTracker()
+
     while True:
         raw_line = ser.readline().decode("utf-8", errors="ignore")
         parsed = parse_line(raw_line)
@@ -78,18 +95,34 @@ def main():
         area = calculate_area(DEFAULT_INFLOW_Q_CM3S, CALIBRATED_CD, h)
         pct = blockage_percent(area, PIPE_AREA_CM2)
 
-        status = "CLEAR"
-        if pct is not None:
-            if pct > 15:
-                status = "BLOCKAGE DETECTED"
-            elif pct > 5:
-                status = "MINOR / WITHIN NOISE"
+        # RATE-BASED status: flag only unusual accelerations above the
+        # learned normal rise rate; a falling level means the blockage
+        # has been cleared. The absolute water level never decides this.
+        rate_history.append((t_ms / 1000.0, h))
+        ref_tracker.update(h)
+        verdict = detect_blockage_from_rise(
+            [w for _, w in rate_history],
+            times=[t for t, _ in rate_history],
+        )
+        falling = verdict["current_rate"] is not None and verdict["current_rate"] <= 0
+        if ref_tracker.decrease_detected or falling:
+            status = "CLEAR"
+            reason = "water level decreasing — blockage has been cleared/opened"
+        else:
+            status = "BLOCKAGE DETECTED" if verdict["verdict"] == "BLOCKAGE_DETECTED" else "CLEAR"
+            reason = verdict["reason"]
+
+        cur = verdict["current_rate"]
+        base = verdict["baseline_rate"]
+        cur_str = f"{cur:>7}" if cur is not None else "      —"
+        base_str = f"{base:.4f}" if base is not None else "—"
 
         area_str = f"{area:.3f}" if area is not None else "N/A"
         pct_str = f"{pct:.1f}%" if pct is not None else "N/A"
 
         print(f"[t={t_ms:.0f}ms] distance={distance_cm:.2f}cm | water={h:.2f}cm | "
-              f"area={area_str}cm^2 | blockage={pct_str} | {status}")
+              f"area={area_str}cm^2 | blockage={pct_str} | {status} "
+              f"(rise {cur_str} vs baseline {base_str} cm/s | {reason})")
 
         # Log every reading — the dashboard reads the latest one on each auto-refresh
         log_reading(NODE_NAME, h, DEFAULT_INFLOW_Q_CM3S, area, pct)

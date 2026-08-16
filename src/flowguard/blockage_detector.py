@@ -1,15 +1,28 @@
 """
 blockage_detector.py — FlowGuard's core physics + ML detection engine.
 
-Three layers, stacked:
+Detection is RATE-BASED, not level-based. A blockage is NOT "water above
+height X" — it is "water rising much faster than the recent normal rainfall
+rise rate". The system learns the normal rise rate from history and only
+flags unusual accelerations above it:
+
+    rise_rate > normal_rise_rate + threshold  ->  blockage
+    water level decreasing                     ->  clear (blockage opened)
+
+Four layers:
   1. PHYSICS: orifice equation (from Bernoulli) — converts live water height
-     readings into a calculated open channel area.
-  2. ML CONFIRMATION: a single noisy reading doesn't mean much (a splash,
-     a sensor glitch). We keep a rolling window of blockage-% estimates,
-     extract simple features (mean, trend/slope, volatility), and run an
-     Isolation Forest trained on KNOWN-CLEAN behaviour to decide whether a
-     sustained pattern is a real anomaly — not just point-in-time noise.
-  3. TREND FORECAST: linear regression on blockage-% over time, projected
+     readings into a calculated open channel area (used for calibration and
+     the audit-trail blockage-% estimate; verdicts do NOT rely on it).
+  2. RATE-BASED VERDICT: rolling-window slopes of water level vs. a robust
+     (median) baseline of the normal rise rate. Handles noise from the
+     HC-SR04 (±0.3 cm) by averaging over windows instead of per-reading diffs.
+  3. ML CONFIRMATION: a single noisy reading doesn't mean much (a splash,
+     a sensor glitch). We keep a rolling window of water-level behaviour,
+     extract rate features (rise rate, acceleration, rate ratio vs
+     baseline), and run an Isolation Forest trained on KNOWN-CLEAN behaviour
+     to decide whether a sustained pattern is a real anomaly — not just
+     point-in-time noise.
+  4. TREND FORECAST: linear regression on blockage-% over time, projected
      forward to estimate "days until this segment crosses a critical
      blockage threshold" — the same "time-to-critical" idea used in
      predictive-maintenance systems, applied here to infrastructure decay.
@@ -79,7 +92,226 @@ def blockage_percent(a_calculated_cm2, a_clean_cm2):
 
 
 # ------------------------------------------------------------------
-# LAYER 2 — ML CONFIRMATION (Isolation Forest on rolling windows)
+# LAYER 2 — RATE-BASED BLOCKAGE VERDICT (the primary detection signal)
+# ------------------------------------------------------------------
+#
+# A blockage is a CHANGE in how fast the water is rising, never an absolute
+# water level. The sensor noise floor (~±0.3 cm on the HC-SR04) means single
+# reading-to-reading differences are too noisy to trust, so rates are
+# least-squares slopes over rolling windows of readings.
+
+RATE_RECENT_WINDOW = 10      # readings in the "current" slope window
+RATE_BASELINE_WINDOW = 10    # readings per slope sample in the baseline history
+RATE_MIN_READINGS = 20       # readings needed before a verdict is meaningful
+RATE_ABS_MARGIN = 0.05       # cm/reading: minimum margin above baseline to flag
+RATE_MULTIPLIER = 0.8        # margin also scales with the baseline itself
+RATE_FALL_THRESHOLD = 0.0    # rate at/below this (cm/reading) => level falling
+RATE_CLEAR_HYSTERESIS = 0.5  # fraction of margin: rate within this of baseline => clear
+
+# Reference-height tolerance: ±0.5 cm defines "stable" and "reverted to
+# reference" (matches the HC-SR04 noise floor).
+REF_TOLERANCE_CM = 0.5
+REF_LARGE_DROP_CM = 1.5      # drop beyond this needs only 5 readings to confirm
+REF_STABLE_READINGS = 7      # consecutive in-band readings to re-baseline
+REF_LARGE_READINGS = 5       # consecutive large-drop readings to re-baseline
+
+
+def _slope(values):
+    """Least-squares slope of a series (rate per reading step)."""
+    x = np.arange(len(values))
+    return float(np.polyfit(x, values, 1)[0])
+
+
+def _rolling_slopes(levels, window):
+    """Slope of every window of `window` consecutive readings."""
+    return [_slope(levels[i:i + window]) for i in range(len(levels) - window + 1)]
+
+
+def detect_blockage_from_rise(water_levels, times=None,
+                              recent_window=RATE_RECENT_WINDOW,
+                              baseline_window=RATE_BASELINE_WINDOW,
+                              min_readings=RATE_MIN_READINGS,
+                              abs_margin=RATE_ABS_MARGIN,
+                              multiplier=RATE_MULTIPLIER,
+                              fall_threshold=RATE_FALL_THRESHOLD,
+                              clear_hysteresis=RATE_CLEAR_HYSTERESIS):
+    """
+    RATE-BASED blockage verdict — the primary detection signal.
+
+    Learns the normal (rainfall) rise rate from the earlier history and flags
+    only unusual accelerations above it. An absolute water level NEVER decides
+    the verdict.
+
+        blockage: current_rate > baseline_rate + max(abs_margin, multiplier * baseline_rate)
+        clear:    current_rate <= baseline_rate + clear_hysteresis * margin  (rate back near normal)
+                  OR current_rate <= fall_threshold                          (level falling = cleared)
+
+    Args:
+        water_levels: list of water levels (cm), oldest -> newest.
+        times: optional matching times (any units, e.g. seconds) — used only
+            for slope rescaling; None means one reading per step.
+        recent_window: readings used to estimate the CURRENT rise rate.
+        baseline_window: readings per slope sample used to learn the normal
+            (rainfall) rise rate. Smaller = more responsive to drift.
+        min_readings: readings required before the verdict is meaningful.
+        abs_margin: minimum margin (cm/reading) above baseline to flag.
+        multiplier: baseline scales the margin too (relative acceleration).
+        fall_threshold: rate at/below this counts as "water falling".
+        clear_hysteresis: fraction of the margin — the current rate may sit
+            this close to baseline and still be CLEAR (prevents chattering).
+
+    Returns:
+        dict with verdict ("CLEAR" | "BLOCKAGE_DETECTED"), current_rate,
+        baseline_rate, margin, and reason (why the verdict was chosen).
+    """
+    levels = [float(h) for h in water_levels if h is not None and np.isfinite(h) and h >= 0]
+    scale = 1.0
+    if times is not None:
+        times = [float(t) for t in times if t is not None]
+        if len(times) != len(levels) or len(times) < 2:
+            times = None
+        else:
+            dt = times[-1] - times[0]
+            scale = len(levels) / dt if dt > 0 else 1.0  # per-step -> per-time-unit
+
+    n = len(levels)
+    if n < min_readings or n < recent_window + baseline_window:
+        return {
+            "verdict": "CLEAR",
+            "current_rate": None,
+            "baseline_rate": None,
+            "margin": None,
+            "reason": "insufficient data — establishing the normal rise-rate baseline",
+        }
+
+    # Current rise rate: slope over the most recent readings.
+    current_rate = _slope(levels[-recent_window:]) * scale
+
+    # Normal rise rate: median of every rolling-window slope BEFORE the
+    # recent window — the learned "rainfall" behaviour.
+    baseline_slopes = _rolling_slopes(levels[:-recent_window], baseline_window)
+    baseline_rate = float(np.median(baseline_slopes)) * scale if baseline_slopes else 0.0
+
+    # Rate-based margin: a minimum absolute cushion PLUS a relative cushion
+    # that grows with the normal rise rate itself.
+    margin = max(abs_margin * scale, multiplier * max(baseline_rate, 0.0))
+
+    if current_rate <= fall_threshold:
+        verdict = "CLEAR"
+        reason = "water level falling — blockage has been cleared/opened"
+    elif current_rate > baseline_rate + margin:
+        verdict = "BLOCKAGE_DETECTED"
+        reason = "rise rate far above the normal rainfall rise rate"
+    elif current_rate <= baseline_rate + clear_hysteresis * margin:
+        verdict = "CLEAR"
+        reason = "rise rate back to the normal rainfall rate"
+    else:
+        verdict = "BLOCKAGE_DETECTED"
+        reason = "rise rate still elevated above the normal rainfall rate"
+
+    return {
+        "verdict": verdict,
+        "current_rate": round(current_rate, 4),
+        "baseline_rate": round(baseline_rate, 4),
+        "margin": round(margin, 4),
+        "reason": reason,
+    }
+
+
+class ReferenceHeightTracker:
+    """
+    Tracks the reference water level and re-baselines it ONLY on genuine
+    decreases (blockage cleared / pipe opened) — never on rises, which are
+    exactly what a blockage does.
+
+    Events returned by update():
+      None                     — normal reading, nothing confirmed yet
+      "STABLE_LEVEL_CONFIRMED" — small decrease held stable within ±0.5 cm
+                                 for 7 consecutive readings
+      "LARGE_DECREASE_CONFIRMED" — drop > 1.5 cm held for 5 consecutive readings
+    """
+
+    def __init__(self, initial_fixed_height_cm=None):
+        self.fixed_height = initial_fixed_height_cm
+        self.decrease_detected = False
+        self._candidate = None        # level the water settled at after a drop
+        self._stable_count = 0        # consecutive in-band readings since the drop
+        self._large_count = 0         # consecutive large-drop readings
+
+    def update(self, water_level_cm):
+        """
+        Feed one valid reading (cm). Returns an event string or None.
+        Invalid readings (None or <= 0) are ignored.
+        """
+        if water_level_cm is None or water_level_cm <= 0:
+            return None
+
+        if self.fixed_height is None:
+            # Startup: the first reading is the reference.
+            self.fixed_height = float(water_level_cm)
+            return None
+
+        drop = self.fixed_height - water_level_cm
+
+        # Back within tolerance of the old reference -> the decrease was
+        # only a transient dip; abort re-baselining.
+        if abs(drop) <= REF_TOLERANCE_CM:
+            self.decrease_detected = False
+            self._candidate = None
+            self._stable_count = 0
+            self._large_count = 0
+            return None
+
+        if drop > 0:
+            # Water is below the reference — a decrease is in progress.
+            self.decrease_detected = True
+            if self._candidate is None:
+                # Trigger reading: it is streak #1 by definition (the drop is
+                # already past tolerance), so record it and wait for more.
+                self._candidate = float(water_level_cm)
+                self._stable_count = 1
+                self._large_count = 1 if drop > REF_LARGE_DROP_CM else 0
+                return None
+
+            if drop > REF_LARGE_DROP_CM:
+                # Large drop: confirm after 5 consecutive readings.
+                self._large_count += 1
+                if self._large_count >= REF_LARGE_READINGS:
+                    self.fixed_height = float(water_level_cm)
+                    self.decrease_detected = False
+                    self._candidate = None
+                    self._stable_count = 0
+                    self._large_count = 0
+                    return "LARGE_DECREASE_CONFIRMED"
+            else:
+                self._large_count = 0
+                # Small drop: confirm only when the new level holds steady
+                # within ±0.5 cm of the candidate for 7 consecutive readings.
+                if abs(water_level_cm - self._candidate) <= REF_TOLERANCE_CM:
+                    self._stable_count += 1
+                    if self._stable_count >= REF_STABLE_READINGS:
+                        self.fixed_height = float(self._candidate)
+                        self.decrease_detected = False
+                        self._candidate = None
+                        self._stable_count = 0
+                        self._large_count = 0
+                        return "STABLE_LEVEL_CONFIRMED"
+                else:
+                    self._stable_count = 0
+            return None
+
+        # Water is above the reference (rise): never re-baseline — a rise is
+        # a possible blockage, not a new reference. A rise also aborts any
+        # pending decrease confirmation: the dip was only transient.
+        self.decrease_detected = False
+        self._candidate = None
+        self._stable_count = 0
+        self._large_count = 0
+        return None
+
+
+# ------------------------------------------------------------------
+# LAYER 3 — ML CONFIRMATION (Isolation Forest on rolling windows)
 # ------------------------------------------------------------------
 
 def extract_window_features(blockage_pct_series):
@@ -98,6 +330,51 @@ def extract_window_features(blockage_pct_series):
     mean_val = arr.mean()
     std_val = arr.std()
     return np.array([mean_val, slope, std_val])
+
+
+def extract_rate_features(water_levels, times=None, baseline_rate=None):
+    """
+    Features for the Isolation Forest, describing WATER-LEVEL RATE BEHAVIOUR
+    rather than absolute level:
+      - rate:        current rise rate (cm per reading / per time unit)
+      - accel:       change in the rise rate (second slope) — a blockage
+                     accelerates the rise
+      - rate_ratio:  current rise rate vs the NORMAL rise rate — the main
+                     signal. Pass the learned baseline (median of the
+                     normal rainfall rise rates); otherwise falls back to
+                     the window's own mean rate.
+
+    The absolute water level is deliberately NOT a feature: it has far more
+    variance than the rate signals and would dominate the Isolation Forest's
+    splits, hiding exactly the rate anomalies we must detect.
+
+    Args:
+        water_levels: list of water levels (cm), oldest -> newest.
+        times: optional matching times; None means one reading per step.
+        baseline_rate: the learned normal (rainfall) rise rate — the ratio
+            feature compares the current rate against it.
+    """
+    levels = [float(h) for h in water_levels if h is not None and np.isfinite(h) and h >= 0]
+    if len(levels) < 3:
+        return None
+    scale = 1.0
+    if times is not None:
+        times = [float(t) for t in times if t is not None]
+        if len(times) == len(levels) and len(times) >= 2:
+            dt = times[-1] - times[0]
+            if dt > 0:
+                scale = len(levels) / dt
+    x = np.arange(len(levels))
+    rate = np.polyfit(x, levels, 1)[0] * scale
+    # Acceleration: slope of the rolling per-step differences.
+    diffs = np.diff(levels)
+    accel = np.polyfit(x[:-1], diffs, 1)[0] * scale
+    if baseline_rate is not None and baseline_rate > 1e-9:
+        rate_ratio = float(rate / baseline_rate)
+    else:
+        mean_rate = float(np.mean(diffs)) * scale
+        rate_ratio = float(rate / mean_rate) if abs(mean_rate) > 1e-9 else 0.0
+    return np.array([rate, accel, rate_ratio])
 
 
 class BlockageAnomalyDetector:
@@ -127,7 +404,7 @@ class BlockageAnomalyDetector:
 
 
 # ------------------------------------------------------------------
-# LAYER 3 — TREND FORECAST (linear extrapolation, time-to-critical)
+# LAYER 4 — TREND FORECAST (linear extrapolation, time-to-critical)
 # ------------------------------------------------------------------
 
 def forecast_days_to_critical(blockage_pct_history, timestamps_days, critical_threshold_pct=50.0):
@@ -187,29 +464,76 @@ if __name__ == "__main__":
     pct_blocked = blockage_percent(a_calc_blocked, a_clean_cm2=PIPE_AREA_CM2)
     print(f"Calculated area: {a_calc_blocked:.4f} cm^2, blockage: {pct_blocked:.1f}%")
 
-    print("\n=== Testing ML confirmation layer ===")
-    # Simulate a proper-sized clean-baseline set (small noise around 0% blockage).
-    # NOTE: 10 samples (an earlier version of this test) is too few for Isolation
-    # Forest to learn a stable boundary — it needs enough examples of "normal"
-    # variation to distinguish real anomalies from noise. In your real deployment,
-    # this baseline would be built from your first several days/weeks of clean
-    # (or known-recently-cleaned) readings.
+    print("\n=== Testing ML confirmation layer (rate features) ===")
+    # Baseline: windows of steady normal rainfall rise (rate ~1 per step).
     np.random.seed(42)
-    clean_readings = [list(np.random.normal(0, 2, 5)) for _ in range(60)]
-    clean_features = [extract_window_features(w) for w in clean_readings]
+    base = np.arange(30, dtype=float)
+    baseline_rate = 1.0  # the learned normal rise rate
+    clean_windows = [
+        list(base + np.random.normal(0, 0.3, 30)) for _ in range(60)
+    ]
+    clean_features = [extract_rate_features(w, baseline_rate=baseline_rate) for w in clean_windows]
 
     detector = BlockageAnomalyDetector(contamination=0.05)
     detector.fit(clean_features)
 
-    # Test 1: a normal noisy window (should NOT be flagged)
-    normal_window = [1.2, -0.5, 0.8, 1.5, 0.3]
-    normal_features = extract_window_features(normal_window)
-    print(f"Normal window flagged as anomaly: {detector.is_confirmed_anomaly(normal_features)}")
+    # Test 1: a normal noisy rise window (should NOT be flagged)
+    normal_window = list(base + np.random.normal(0, 0.3, 30))
+    normal_features = extract_rate_features(normal_window, baseline_rate=baseline_rate)
+    print(f"Normal rise window flagged as anomaly: {detector.is_confirmed_anomaly(normal_features)}")
 
-    # Test 2: a sustained rising-blockage window (SHOULD be flagged)
-    rising_window = [5, 15, 28, 40, 55]
-    rising_features = extract_window_features(rising_window)
-    print(f"Rising-blockage window flagged as anomaly: {detector.is_confirmed_anomaly(rising_features)}")
+    # Test 2: a window where the rise accelerates sharply (SHOULD be flagged)
+    rising_window = list(base) + [30 + 2.5 * i for i in range(10)]
+    rising_features = extract_rate_features(rising_window, baseline_rate=baseline_rate)
+    print(f"Accelerating-rise window flagged as anomaly: {detector.is_confirmed_anomaly(rising_features)}")
+
+    print("\n=== Testing RATE-BASED verdict (the primary detection signal) ===")
+    # Normal rainfall rise: ~1 cm per reading, with HC-SR04-scale noise.
+    def noise():
+        return float(np.random.normal(0, 0.15))
+
+    normal_rise = [0.0] + [sum(1.0 + noise() for _ in range(i)) for i in range(1, 40)]
+    normal_rise += [normal_rise[-1] + 1.0 + noise() for _ in range(10)]  # steady 1.0-1.1 range
+    r = detect_blockage_from_rise(normal_rise)
+    print(f"Normal rise (+1 cm/reading steady): {r['verdict']}  (expected CLEAR)  [{r['reason']}]")
+
+    # Blockage: the rise suddenly accelerates to ~+2.5, then ~+3 cm/reading.
+    blocked_rise = list(normal_rise)
+    for _ in range(5):
+        blocked_rise.append(blocked_rise[-1] + 2.5 + noise())
+    for _ in range(5):
+        blocked_rise.append(blocked_rise[-1] + 3.0 + noise())
+    r = detect_blockage_from_rise(blocked_rise)
+    print(f"Accelerating rise (+2.5, +3 cm/reading): {r['verdict']}  (expected BLOCKAGE_DETECTED)  "
+          f"[current={r['current_rate']}, baseline={r['baseline_rate']}, reason: {r['reason']}]")
+
+    # Blockage cleared: the water starts falling.
+    clearing_rise = list(blocked_rise)
+    for _ in range(3):
+        clearing_rise.append(clearing_rise[-1] + 2.0 + noise())
+    for _ in range(3):
+        clearing_rise.append(clearing_rise[-1] + 0.5 + noise())
+    for _ in range(5):
+        clearing_rise.append(clearing_rise[-1] - 0.5 + noise())
+    r = detect_blockage_from_rise(clearing_rise)
+    print(f"Water falling (blockage opened): {r['verdict']}  (expected CLEAR)  [{r['reason']}]")
+
+    # Insufficient data: first readings should never alarm.
+    r = detect_blockage_from_rise([1.0, 1.1, 1.2, 1.3])
+    print(f"Early data (4 readings): {r['verdict']}  (expected CLEAR)  [{r['reason']}]")
+
+    print("\n=== Testing ReferenceHeightTracker (decrease -> clear + re-baseline) ===")
+    tracker = ReferenceHeightTracker(initial_fixed_height_cm=20.0)
+    tracker.update(20.0)
+    tracker.update(18.8)  # decrease starts
+    events = [tracker.update(18.9) for _ in range(6)]
+    print(f"Small decrease re-baselined: {events[-1]} (expected STABLE_LEVEL_CONFIRMED), "
+          f"fixed height now {tracker.fixed_height:.1f} cm")
+    tracker2 = ReferenceHeightTracker(initial_fixed_height_cm=20.0)
+    tracker2.update(20.0)
+    events2 = [tracker2.update(18.2) for _ in range(5)]
+    print(f"Large decrease re-baselined: {events2[-1]} (expected LARGE_DECREASE_CONFIRMED), "
+          f"fixed height now {tracker2.fixed_height:.1f} cm")
 
     print("\n=== Testing trend forecast ===")
     history = [2, 5, 9, 14, 20]  # blockage % over 5 readings
