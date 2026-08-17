@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 import serial
 import streamlit as st
+# pyrefly: ignore [missing-import]
 from blockage_detector import (
     RATE_RECENT_WINDOW,
     BlockageAnomalyDetector,
@@ -31,6 +32,7 @@ from blockage_detector import (
     extract_rate_features,
     forecast_days_to_critical,
 )
+# pyrefly: ignore [missing-import]
 from config import (
     CALIBRATED_CD,
     DEFAULT_INFLOW_Q_CM3S,
@@ -40,8 +42,11 @@ from config import (
     SERIAL_BAUD,
     SERIAL_PORT,
 )
+# pyrefly: ignore [missing-import]
 from network_simulation import WaterNetwork, generate_rainfall_pulse
+# pyrefly: ignore [missing-import]
 from serial_reader import format_status_line, parse_line
+# pyrefly: ignore [missing-import]
 from storage import (
     get_blockage_events,
     get_calibration_log,
