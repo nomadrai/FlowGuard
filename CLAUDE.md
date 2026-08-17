@@ -552,7 +552,7 @@ git status                  # Check for untracked files
 
 - **HC-SR04 sensor range:** 2cm - 400cm (practical: 5cm - 300cm)
 - **HC-SR04 accuracy:** ±3mm (noise requires ML confirmation layer)
-- **ESP32 Serial Monitor:** Manual data entry to dashboard (no auto-streaming yet)
+- **USB serial streaming (live):** The dashboard opens the ESP32 port itself (serial_reader.py's engine embedded in-process via a background thread); every reading is pushed into an in-memory store the moment the line arrives and repainted at 0.5 s — no manual entry, no polling delay. `python src/flowguard/serial_reader.py` remains available as a standalone terminal view of the same engine
 
 ### Software Limitations
 
@@ -739,6 +739,12 @@ pip install -e ".[analysis]"
 ---
 
 ## Changelog
+
+**v1.3.0 (2026-08-18):**
+- Truly live dashboard data: the dashboard now embeds `serial_reader.py`'s engine (`SerialMonitor`) in-process via a background thread (`st.cache_resource` singleton). Each ESP32 line is parsed, classified, and pushed into a thread-safe in-memory store the instant it arrives — no DB round-trip, no polling, no refresh slider. The live panel repaints the store at a fixed 0.5 s frame rate and shows stream freshness ("RECEIVED Xs AGO")
+- `serial_reader.py` refactored into a reusable engine: `process_reading()` (shared per-reading physics + rate verdict), `SerialMonitor` (port retry/reconnect, bounded history, callbacks), `format_cli_line()`; the standalone CLI prints identically to before
+- Verdict card now shows exactly `CLEAR` / `BLOCKAGE DETECTED`; live rise rates labeled cm/s (serial_reader's time-scaled units); graceful serial-port-unavailable state with automatic retry; standalone `serial_reader.py` now optional rather than required before the dashboard
+- New `tests/test_serial_monitor.py` (9 tests): synchronous push (zero-delay proof), thread line→store latency < 100 ms, bounded history, error/reconnect, callbacks
 
 **v1.2.0 (2026-08-16):**
 - Added `train_ml/` — a self-contained ML training pipeline separate from the live sensor path, dashboard, and SQLite audit trail: 16-experiment recording protocol (`record_experiment.py`, `b`/`c` event keys → `BLOCKAGE_INSERTED`/`BLOCKAGE_REMOVED`), depth-dependent expected-rate model (`expected_rise_rate = f(water_depth)` learned from experiments 1-4), RandomForestClassifier main model + IsolationForest baseline, leave-one-experiment-out whole-experiment evaluation, and untrained prediction of unseen experiments. See `train_ml/README.md`

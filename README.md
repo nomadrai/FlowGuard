@@ -162,6 +162,11 @@ pip install -e ".[dev]"
 streamlit run src/flowguard/flowguard_dashboard.py
 ```
 
+The dashboard opens the ESP32 serial port itself and streams readings live —
+no separate terminal or data-entry step needed (see `Live Demo Workflow`
+below). `python src/flowguard/serial_reader.py` still works standalone for a
+terminal view of the same stream.
+
 The dashboard provides:
 - **Calibration panel:** Enter physical measurements to calculate discharge coefficient (Cd)
 - **Physical node monitoring:** Submit real-time sensor readings
@@ -288,9 +293,9 @@ mypy src/
 **Suggested sequence for judging/presentation:**
 
 1. **Show hardware setup:** ESP32, sensor, physical channel
-2. **Demonstrate clean channel:** Pour water, submit readings, show ~0% blockage
+2. **Demonstrate clean channel:** Run the dashboard (it opens the ESP32 port itself), pour water, watch readings stream in and show ~0% blockage
 3. **Live blockage insertion:** Insert obstruction (e.g., sponge) in front of audience
-4. **Show detection:** Pour again, submit reading, watch blockage % jump and ML confirmation
+4. **Show detection:** Pour again, watch the verdict flip to BLOCKAGE DETECTED and the rise rate jump above the normal rate
 5. **Network cascade:** Run simulation to show citywide flood propagation
 6. **Audit trail:** Display compliance/accountability features
 7. **Close with value proposition:** Real-time detection + citywide prediction + civic accountability

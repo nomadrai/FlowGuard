@@ -3,8 +3,16 @@ flowguard_dashboard.py — ties together the real physical node, the ML
 confirmation layer, the network-level cascade simulation, and the audit
 trail into one control-room dashboard.
 
+Live data flows straight from the ESP32: a SerialMonitor (serial_reader.py's
+engine) reads the port in a background thread and pushes every reading into
+an in-memory store the instant the line arrives. The live panel repaints
+from that store — no polling, no database round-trip in the live path.
+
 Run: streamlit run flowguard_dashboard.py
 """
+
+import html
+import time
 
 import numpy as np
 import pandas as pd
@@ -27,8 +35,10 @@ from storage import (
 # pyrefly: ignore [missing-import]
 from config import (
     PIPE_AREA_CM2, INLET_BOX_BASE_AREA_CM2, CALIBRATED_CD,
-    DEFAULT_INFLOW_Q_CM3S, NODE_NAME,
+    DEFAULT_INFLOW_Q_CM3S, NODE_NAME, SERIAL_PORT, SERIAL_BAUD,
 )
+# pyrefly: ignore [missing-import]
+from serial_reader import SerialMonitor
 
 st.set_page_config(page_title="FlowGuard — Nagpur Flood Early Warning", layout="wide", initial_sidebar_state="collapsed")
 
@@ -210,6 +220,18 @@ init_db()
 
 
 # ============================================================
+# LIVE SERIAL SOURCE — one SerialMonitor per process, shared by
+# every session/tab. Its background thread opens the ESP32 port
+# and pushes each reading into the in-memory store the instant
+# the line arrives; the live panel below only repaints from that
+# store (no polling, no DB round-trip in the live path).
+# ============================================================
+@st.cache_resource
+def get_serial_monitor():
+    return SerialMonitor().start()
+
+
+# ============================================================
 # SHARED RENDER HELPERS
 # ============================================================
 def _fmt(value, fmt):
@@ -271,12 +293,13 @@ def compute_ml_and_forecast(history_df):
     return ml_confirmed, forecast
 
 
-def maybe_log_blockage_event(reading_id, pct, ml_confirmed, forecast, blocked):
-    """Log a blockage event only when the reading is new — prevents duplicate rows on every auto-refresh."""
+def maybe_log_blockage_event(key, pct, ml_confirmed, forecast, blocked):
+    """Log a blockage event only when the reading is new — prevents duplicate rows on every auto-refresh.
+    `key` uniquely identifies the reading (in-memory store version in live mode, DB row id in manual mode)."""
     if blocked and pct is not None:
-        if st.session_state.get("last_logged_reading_id") != reading_id:
+        if st.session_state.get("last_logged_reading_key") != key:
             log_blockage_event(NODE_NAME, pct, int(ml_confirmed), forecast)
-            st.session_state["last_logged_reading_id"] = reading_id
+            st.session_state["last_logged_reading_key"] = key
 
 
 def render_panel_head(title, tag, sub=None):
@@ -325,12 +348,13 @@ def render_reading_card(current, source_label):
     """The blockage verdict: status dot + the rate-based facts behind it."""
     blocked = bool(current.get("blocked"))
     state_cls = "alert" if blocked else "ok"
-    status_text = "BLOCKAGE DETECTED" if blocked else "CHANNEL CLEAR"
+    status_text = "BLOCKAGE DETECTED" if blocked else "CLEAR"
     ml_text = "ML CONFIRMED" if current.get("ml_confirmed") else "not yet confirmed"
     forecast = current.get("forecast")
     forecast_text = f"{forecast:.1f} days" if forecast is not None else "insufficient trend data"
     rise = current.get("rise_rate")
     baseline = current.get("baseline_rate")
+    rate_unit = current.get("rate_unit", "cm/reading")
     rise_text = f"{rise:.4f}" if rise is not None else "—"
     baseline_text = f"{baseline:.4f}" if baseline is not None else "—"
     reason_text = current.get("verdict_reason", "—")
@@ -342,8 +366,8 @@ def render_reading_card(current, source_label):
             <span class="fg-src">{source_label}</span>
         </div>
         <div class="fg-facts">
-            <div class="fg-fact"><span class="k">Rise rate</span><span class="v">{rise_text} cm/reading</span></div>
-            <div class="fg-fact"><span class="k">Normal rise rate</span><span class="v">{baseline_text} cm/reading</span></div>
+            <div class="fg-fact"><span class="k">Rise rate</span><span class="v">{rise_text} {rate_unit}</span></div>
+            <div class="fg-fact"><span class="k">Normal rise rate</span><span class="v">{baseline_text} {rate_unit}</span></div>
             <div class="fg-fact"><span class="k">Detection basis</span><span class="v">{reason_text}</span></div>
             <div class="fg-fact"><span class="k">Effective area</span><span class="v">{_fmt(current.get("area"), "%.4f")} cm²</span></div>
             <div class="fg-fact"><span class="k">Clean pipe area</span><span class="v">{PIPE_AREA_CM2:.4f} cm²</span></div>
@@ -366,11 +390,11 @@ def render_empty_state(live=True):
     if live:
         st.markdown("""
         <div class="fg-empty">
-            <div class="fg-empty-title">NO LIVE READINGS YET</div>
+            <div class="fg-empty-title">AWAITING SERIAL DATA</div>
             <ol>
-                <li><b>01</b> — run <span class="mono">python serial_reader.py</span> in a separate terminal</li>
-                <li><b>02</b> — pour water through the inlet box (≈ 120 mL/s for clean-pipe heights of 2–5 cm)</li>
-                <li><b>03</b> — watch this panel update within ~1–2 seconds per reading</li>
+                <li><b>01</b> — pour water through the inlet box (≈ 120 mL/s for clean-pipe heights of 2–5 cm)</li>
+                <li><b>02</b> — readings stream in the moment the ESP32 sends them — no separate terminal needed</li>
+                <li><b>03</b> — block the pipe with a sponge and watch the verdict flip to BLOCKAGE DETECTED</li>
             </ol>
         </div>
         """, unsafe_allow_html=True)
@@ -385,6 +409,21 @@ def render_empty_state(live=True):
             </ol>
         </div>
         """, unsafe_allow_html=True)
+
+
+def render_serial_error(message):
+    """Serial port failed to open — actionable recovery steps, auto-retry in progress."""
+    st.markdown(f"""
+    <div class="fg-empty">
+        <div class="fg-empty-title">SERIAL PORT UNAVAILABLE</div>
+        <ol>
+            <li><b>01</b> — check the ESP32 is powered and the USB cable is connected</li>
+            <li><b>02</b> — verify <span class="mono">SERIAL_PORT</span> in config.py matches your device (Arduino IDE → Tools → Port)</li>
+            <li><b>03</b> — FlowGuard retries automatically every 2 seconds — plug in and it picks up on its own</li>
+        </ol>
+    </div>
+    <div class="fg-note" style="margin-top:0.6rem;"><b>Detail:</b> <span class="mono">{html.escape(message)}</span></div>
+    """, unsafe_allow_html=True)
 
 
 # ============================================================
@@ -403,11 +442,10 @@ with st.sidebar:
     live_mode = st.toggle(
         "Live mode — serial feed",
         value=True,
-        help="Auto-refresh from serial_reader.py. Turn off for manual entry.",
+        help="Stream readings straight from the ESP32 serial port. Turn off for manual entry.",
     )
     if live_mode:
-        refresh_rate = st.slider("Refresh rate (sec)", 1, 5, 2)
-        st.caption("Run `python serial_reader.py` in a separate terminal FIRST — the dashboard just displays what it logs.")
+        st.caption("Reads the ESP32 serial port directly — readings appear the moment they arrive, no separate terminal needed.")
 
     st.markdown('<div class="fg-sb-label">Node geometry</div>', unsafe_allow_html=True)
     st.markdown(f"""
@@ -416,6 +454,7 @@ with st.sidebar:
     <div class="fg-geo"><span class="k">Inlet box base</span><span class="v">{INLET_BOX_BASE_AREA_CM2:.0f} cm²</span></div>
     <div class="fg-geo"><span class="k">Calibrated Cd</span><span class="v">{CALIBRATED_CD}</span></div>
     <div class="fg-geo"><span class="k">Assumed inflow</span><span class="v">{DEFAULT_INFLOW_Q_CM3S:.0f} mL/s</span></div>
+    <div class="fg-geo"><span class="k">Serial link</span><span class="v">{SERIAL_PORT} @ {SERIAL_BAUD}</span></div>
     """, unsafe_allow_html=True)
 
     st.markdown('<div class="fg-sb-label">Recalibration</div>', unsafe_allow_html=True)
@@ -465,45 +504,56 @@ render_panel_head(
 )
 
 if live_mode:
-    @st.fragment(run_every=refresh_rate)
+    @st.fragment(run_every=0.5)
     def live_panel():
-        """Auto-refreshing live surface — only this block reruns, so the rest of the page never flickers."""
-        hist = get_readings(NODE_NAME)
-        if hist.empty:
+        """Auto-refreshing live surface — only this block reruns, so the rest of the
+        page never flickers. Repaints from the SerialMonitor's in-memory store,
+        which the background thread fills the instant each serial line arrives —
+        no polling, no database round-trip in this path."""
+        monitor = get_serial_monitor()
+        snap = monitor.snapshot()
+
+        if snap["error"]:
+            render_serial_error(snap["error"])
+            return
+        if snap["latest"] is None:
             render_empty_state(live=True)
             return
 
-        latest = hist.iloc[0]
-        verdict = compute_rate_verdict(hist)
-        ml_confirmed, forecast = compute_ml_and_forecast(hist)
-        maybe_log_blockage_event(int(latest["id"]), latest["blockage_pct"], ml_confirmed, forecast,
-                                 verdict["verdict"] == "BLOCKAGE_DETECTED")
+        latest = snap["latest"]
+        hist = monitor.history()
+        hist_df = pd.DataFrame(hist).iloc[::-1].reset_index(drop=True)
+        ml_confirmed, forecast = compute_ml_and_forecast(hist_df)
+        maybe_log_blockage_event(snap["version"], latest["blockage_pct"], ml_confirmed,
+                                 forecast, latest["status"] == "BLOCKAGE_DETECTED")
 
+        age_s = time.monotonic() - latest["received_at"]
         current = {
             "height": latest["water_level_cm"],
-            "area": latest["calculated_area_cm2"],
+            "area": latest["area_cm2"],
             "forecast": forecast,
             "ml_confirmed": ml_confirmed,
             "ts": latest["timestamp"],
-            "blocked": verdict["verdict"] == "BLOCKAGE_DETECTED",
-            "rise_rate": verdict["current_rate"],
-            "baseline_rate": verdict["baseline_rate"],
-            "verdict_reason": verdict["reason"],
+            "blocked": latest["status"] == "BLOCKAGE DETECTED",
+            "rise_rate": latest["current_rate"],
+            "baseline_rate": latest["baseline_rate"],
+            "verdict_reason": latest["reason"],
+            "rate_unit": "cm/s",
         }
         st.markdown(f"""
         <div class="fg-feed-line">
             <span class="fg-feed-dot"></span>
-            LATEST {latest["timestamp"]} &nbsp;&middot;&nbsp; {len(hist)} READINGS STORED &nbsp;&middot;&nbsp; SOURCE serial_reader.py
+            LATEST {latest["timestamp"]} &nbsp;&middot;&nbsp; RECEIVED {age_s:.1f}s AGO &nbsp;&middot;&nbsp; {snap["history_len"]} READINGS THIS SESSION &nbsp;&middot;&nbsp; ENGINE serial_reader.py
         </div>
         """, unsafe_allow_html=True)
 
         render_kpis(current)
         col1, col2 = st.columns([1, 1.6], gap="medium")
         with col1:
-            render_reading_card(current, "LIVE — serial_reader.py")
+            render_reading_card(current, "LIVE — ESP32 SERIAL")
         with col2:
             if len(hist) > 1:
-                render_charts(hist)
+                render_charts(hist_df)
 
     live_panel()
 
