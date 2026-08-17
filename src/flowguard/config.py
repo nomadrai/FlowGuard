@@ -12,6 +12,7 @@ change a value ONCE here, and every script picks it up automatically.
 """
 
 import math
+from pathlib import Path
 
 # ------------------------------------------------------------------
 # HARDWARE GEOMETRY (measured with a ruler)
@@ -56,3 +57,18 @@ SERIAL_PORT = "COM7"  # <-- CHANGE THIS to your actual port (Tools -> Port in Ar
 SERIAL_BAUD = 115200
 
 NODE_NAME = "Physical_Node_1"
+
+# ------------------------------------------------------------------
+# TRAINED ML MODEL (artifacts produced by the train_ml pipeline)
+# ------------------------------------------------------------------
+# The dashboard's ML confirmation layer loads the RandomForest +
+# expected-rate model trained on the 16 recorded experiments. Paths
+# resolve relative to the repo root so retrained artifacts are picked
+# up automatically (no copying required).
+REPO_ROOT = Path(__file__).resolve().parents[2]
+ML_MODELS_DIR = str(REPO_ROOT / "train_ml" / "models")
+
+# ML confirmation requires the trained model to flag BLOCKAGE for a
+# MAJORITY of the last N readings — per-reading predictions chatter
+# (experiment 17 flips ~20 times over 88 readings), the window steadies it.
+ML_CONFIRM_WINDOW = 5

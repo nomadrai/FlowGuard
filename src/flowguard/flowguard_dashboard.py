@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 import serial
 import streamlit as st
+
 # pyrefly: ignore [missing-import]
 from blockage_detector import (
     RATE_RECENT_WINDOW,
@@ -32,6 +33,7 @@ from blockage_detector import (
     extract_rate_features,
     forecast_days_to_critical,
 )
+
 # pyrefly: ignore [missing-import]
 from config import (
     CALIBRATED_CD,
@@ -42,10 +44,16 @@ from config import (
     SERIAL_BAUD,
     SERIAL_PORT,
 )
+
+# pyrefly: ignore [missing-import]
+from ml_model import get_trained_model
+
 # pyrefly: ignore [missing-import]
 from network_simulation import WaterNetwork, generate_rainfall_pulse
+
 # pyrefly: ignore [missing-import]
 from serial_reader import format_status_line, parse_line
+
 # pyrefly: ignore [missing-import]
 from storage import (
     get_blockage_events,
@@ -283,6 +291,7 @@ class LiveState:
         with self.lock:
             return {
                 "latest": dict(self.latest) if self.latest else None,
+                "history": list(self.history),
                 "levels": list(self.levels),
                 "pcts": list(self.pcts),
                 "console": list(self.console),
@@ -433,52 +442,87 @@ def compute_rate_verdict(history_df):
     return detect_blockage_from_rise(levels)
 
 
-def compute_ml_and_forecast_lists(levels, pcts):
+def _ml_confirmed_fallback(levels):
     """
-    ML confirmation + trend forecast from oldest -> newest lists.
-    Isolation Forest analyses WATER-LEVEL RATE BEHAVIOUR (rise rate,
-    acceleration, rate vs the learned normal) instead of absolute blockage %.
+    Legacy on-the-fly IsolationForest confirmation — used ONLY when the
+    trained model artifacts (train_ml/models) cannot be loaded. Learns the
+    normal rise-rate range from the recent clean history, then flags a
+    sustained rate-behaviour anomaly.
+    """
+    if len(levels) < RATE_RECENT_WINDOW * 2:
+        return False
+    baseline_pool = levels[:-RATE_RECENT_WINDOW]
+    baseline_windows = [
+        baseline_pool[i : i + RATE_RECENT_WINDOW]
+        for i in range(0, len(baseline_pool) - RATE_RECENT_WINDOW, RATE_RECENT_WINDOW)
+    ]
+    baseline_windows = [w for w in baseline_windows if len(w) == RATE_RECENT_WINDOW]
+    if len(baseline_windows) < ML_BASELINE_WINDOWS_MIN:
+        return False
+    baseline_rate = float(np.median([np.mean(np.diff(w)) for w in baseline_windows]))
+    baseline_features = [
+        extract_rate_features(w, baseline_rate=baseline_rate) for w in baseline_windows
+    ]
+    if len(baseline_features) < ML_BASELINE_WINDOWS_MIN:
+        return False
+    detector = BlockageAnomalyDetector(contamination=0.1)
+    detector.fit(baseline_features)
+    recent_features = extract_rate_features(
+        levels[-RATE_RECENT_WINDOW:], baseline_rate=baseline_rate
+    )
+    return detector.is_confirmed_anomaly(recent_features)
+
+
+def compute_ml_and_forecast_lists(history, pcts):
+    """
+    ML confirmation + trend forecast from oldest -> newest data.
+
+    ML confirmation comes from the TRAINED RandomForest (train_ml/models,
+    loaded once via ml_model.get_trained_model) applied with the same
+    depth-relative rate features used in training. A BLOCKAGE needs a
+    MAJORITY of the last ML_CONFIRM_WINDOW readings — per-reading RF
+    predictions chatter, the window steadies the confirmation while the
+    rate-based verdict stays the primary detection signal.
+
+    Args:
+        history: list of (t_sec, water_depth) pairs, oldest -> newest.
+        pcts: list of blockage-% estimates, oldest -> newest.
+
+    Returns:
+        (ml_confirmed, forecast, ml_proba) — ml_proba is the trained RF's
+        BLOCKAGE probability for the latest reading (None when unavailable).
     """
     ml_confirmed = False
-    if len(levels) >= RATE_RECENT_WINDOW * 2:
-        baseline_pool = levels[:-RATE_RECENT_WINDOW]
-        baseline_windows = [
-            baseline_pool[i : i + RATE_RECENT_WINDOW]
-            for i in range(0, len(baseline_pool) - RATE_RECENT_WINDOW, RATE_RECENT_WINDOW)
-        ]
-        baseline_windows = [w for w in baseline_windows if len(w) == RATE_RECENT_WINDOW]
-        # Isolation Forest needs a REAL baseline to learn the normal rise-rate
-        # range — with fewer windows its decision boundary is coin-flipping.
-        # Below the minimum, ML stays "unconfirmed" (the rate verdict alone
-        # still drives detection).
-        if len(baseline_windows) >= ML_BASELINE_WINDOWS_MIN:
-            # Learn the normal rainfall rise rate from the clean history —
-            # the main ML signal is the CURRENT rate divided by it.
-            baseline_rate = float(np.median([np.mean(np.diff(w)) for w in baseline_windows]))
-            baseline_features = [
-                extract_rate_features(w, baseline_rate=baseline_rate) for w in baseline_windows
-            ]
-            if len(baseline_features) >= ML_BASELINE_WINDOWS_MIN:
-                detector = BlockageAnomalyDetector(contamination=0.1)
-                detector.fit(baseline_features)
-                recent_features = extract_rate_features(
-                    levels[-RATE_RECENT_WINDOW:], baseline_rate=baseline_rate
-                )
-                ml_confirmed = detector.is_confirmed_anomaly(recent_features)
+    ml_proba = None
+    model = get_trained_model()
+    if model is not None:
+        result = model.predict(history)
+        if result is not None:
+            ml_confirmed = result["blocked"]
+            ml_proba = result["proba_blocked"]
+    else:
+        ml_confirmed = _ml_confirmed_fallback([h for _t, h in history])
+
     forecast = None
     if len(pcts) >= 5:
         recent_pcts = pcts[-5:]
         forecast = forecast_days_to_critical(
             recent_pcts, list(range(len(recent_pcts))), critical_threshold_pct=50.0
         )
-    return ml_confirmed, forecast
+    return ml_confirmed, forecast, ml_proba
 
 
 def compute_ml_and_forecast(history_df):
     """Shared logic: given the readings history (newest first), compute ML confirmation + forecast for the LATEST reading."""
-    levels = history_df["water_level_cm"].tolist()[::-1]  # oldest -> newest
+    asc = history_df.iloc[::-1]  # oldest -> newest
+    parsed = pd.to_datetime(asc["timestamp"], errors="coerce")
+    if parsed.isna().all():
+        ts_sec = np.arange(len(asc), dtype=float)  # unparseable timestamps -> per-step
+    else:
+        ts_sec = parsed.astype("int64").to_numpy().astype(float) / 1e9
+    history = list(zip(ts_sec.tolist(), [float(h) for h in asc["water_level_cm"].tolist()]))
     pcts = history_df["blockage_pct"].tolist()[::-1]
-    return compute_ml_and_forecast_lists(levels, pcts)
+    return compute_ml_and_forecast_lists(history, pcts)
 
 
 def maybe_log_blockage_event(reading_id, pct, ml_confirmed, forecast, blocked):
@@ -543,6 +587,9 @@ def render_reading_card(current, source_label):
     state_cls = "alert" if blocked else "ok"
     status_text = "BLOCKAGE DETECTED" if blocked else "CHANNEL CLEAR"
     ml_text = "ML CONFIRMED" if current.get("ml_confirmed") else "not yet confirmed"
+    ml_proba = current.get("ml_proba")
+    if ml_proba is not None:
+        ml_text += f" · RF p={ml_proba:.2f}"
     forecast = current.get("forecast")
     forecast_text = f"{forecast:.1f} days" if forecast is not None else "insufficient trend data"
     rise = current.get("rise_rate")
@@ -772,7 +819,9 @@ if live_mode:
                 render_empty_state(live=True)
             return
 
-        ml_confirmed, forecast = compute_ml_and_forecast_lists(snap["levels"], snap["pcts"])
+        ml_confirmed, forecast, ml_proba = compute_ml_and_forecast_lists(
+            snap["history"], snap["pcts"]
+        )
         maybe_log_blockage_event(
             snap["last_rowid"], latest["pct"], ml_confirmed, forecast, latest["blocked"]
         )
@@ -782,6 +831,7 @@ if live_mode:
             "area": latest["area"],
             "forecast": forecast,
             "ml_confirmed": ml_confirmed,
+            "ml_proba": ml_proba,
             "ts": latest["ts"],
             "blocked": latest["blocked"],
             "rise_rate": latest["rise_rate"],
@@ -833,12 +883,13 @@ else:
     if current is None and not hist.empty:
         latest = hist.iloc[0]
         verdict = compute_rate_verdict(hist)
-        ml_confirmed, forecast = compute_ml_and_forecast(hist)
+        ml_confirmed, forecast, ml_proba = compute_ml_and_forecast(hist)
         current = {
             "height": latest["water_level_cm"],
             "area": latest["calculated_area_cm2"],
             "forecast": forecast,
             "ml_confirmed": ml_confirmed,
+            "ml_proba": ml_proba,
             "ts": latest["timestamp"],
             "blocked": verdict["verdict"] == "BLOCKAGE_DETECTED",
             "rise_rate": verdict["current_rate"],
@@ -864,7 +915,7 @@ else:
 
             history = get_readings(NODE_NAME)
             verdict = compute_rate_verdict(history)
-            ml_confirmed, forecast = compute_ml_and_forecast(history)
+            ml_confirmed, forecast, ml_proba = compute_ml_and_forecast(history)
             maybe_log_blockage_event(
                 int(history.iloc[0]["id"]),
                 pct,
@@ -878,6 +929,7 @@ else:
                 "area": area,
                 "forecast": forecast,
                 "ml_confirmed": ml_confirmed,
+                "ml_proba": ml_proba,
                 "ts": history.iloc[0]["timestamp"],
                 "blocked": verdict["verdict"] == "BLOCKAGE_DETECTED",
                 "rise_rate": verdict["current_rate"],
