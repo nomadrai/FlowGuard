@@ -115,6 +115,11 @@ REF_LARGE_DROP_CM = 1.5      # drop beyond this needs only 5 readings to confirm
 REF_STABLE_READINGS = 7      # consecutive in-band readings to re-baseline
 REF_LARGE_READINGS = 5       # consecutive large-drop readings to re-baseline
 
+# Final-gate filter: CLEAR is declared only after this many CONSECUTIVE
+# decreasing sensor readings. A single/isolated sudden decrease (HC-SR04
+# glitch) must never clear a live blockage.
+CLEAR_CONSECUTIVE_DECREASES = 3
+
 
 def _slope(values):
     """Least-squares slope of a series (rate per reading step)."""
@@ -308,6 +313,51 @@ class ReferenceHeightTracker:
         self._stable_count = 0
         self._large_count = 0
         return None
+
+
+class ClearConfirmationFilter:
+    """
+    Final gate on the CLEAR status — sits ABOVE the rate verdict, the ML
+    confirmation, and the reference-height tracker.
+
+    Once the pipeline below has flagged a blockage, CLEAR is declared only
+    after CLEAR_CONSECUTIVE_DECREASES consecutive decreasing sensor
+    readings. A single/isolated sudden decrease — a sensor glitch, not a
+    cleared blockage — never clears a live blockage, no matter what the
+    verdict/ML logic says.
+
+    Usage: feed EVERY valid reading via update(h, raw_blocked), where
+    raw_blocked is the blockage verdict of the pipeline below this filter
+    (rate verdict, ML, reference tracker). update() returns the final,
+    filtered status: "BLOCKAGE DETECTED" | "CLEAR".
+    """
+
+    def __init__(self, required_decreases=CLEAR_CONSECUTIVE_DECREASES):
+        self.required_decreases = required_decreases
+        self.blocked = False  # latched blockage state — only 3 consecutive decreases clear it
+        self._consecutive_decreases = 0
+        self._last_level = None
+
+    def update(self, water_level_cm, raw_blocked):
+        """
+        Feed one valid reading (cm) plus the raw pipeline verdict for it.
+        Returns the final, filtered status ("BLOCKAGE DETECTED" | "CLEAR").
+        """
+        if self._last_level is None:
+            self._last_level = float(water_level_cm)
+        elif water_level_cm < self._last_level:
+            self._consecutive_decreases += 1
+        else:
+            self._consecutive_decreases = 0  # any rise/plateau resets the streak
+        self._last_level = float(water_level_cm)
+
+        if raw_blocked:
+            self.blocked = True
+            return "BLOCKAGE DETECTED"
+        if self.blocked and self._consecutive_decreases < self.required_decreases:
+            return "BLOCKAGE DETECTED"  # decrease not yet sustained — sensor noise
+        self.blocked = False
+        return "CLEAR"
 
 
 # ------------------------------------------------------------------
@@ -534,6 +584,22 @@ if __name__ == "__main__":
     events2 = [tracker2.update(18.2) for _ in range(5)]
     print(f"Large decrease re-baselined: {events2[-1]} (expected LARGE_DECREASE_CONFIRMED), "
           f"fixed height now {tracker2.fixed_height:.1f} cm")
+
+    print("\n=== Testing ClearConfirmationFilter (3 consecutive decreases required) ===")
+    f = ClearConfirmationFilter()
+    # Blockage active: isolated dips must never clear it.
+    assert f.update(5.0, True) == "BLOCKAGE DETECTED"
+    assert f.update(5.2, True) == "BLOCKAGE DETECTED"
+    assert f.update(4.1, False) == "BLOCKAGE DETECTED"  # dip #1 — ignored
+    assert f.update(5.3, True) == "BLOCKAGE DETECTED"
+    assert f.update(4.2, False) == "BLOCKAGE DETECTED"  # another isolated dip — ignored
+    assert f.update(5.4, True) == "BLOCKAGE DETECTED"
+    # Genuine clearing: 3 consecutive decreasing readings confirm CLEAR.
+    assert f.update(4.6, False) == "BLOCKAGE DETECTED"  # decrease 1
+    assert f.update(4.2, False) == "BLOCKAGE DETECTED"  # decrease 2
+    assert f.update(3.9, False) == "CLEAR"              # decrease 3 -> confirmed
+    assert f.update(3.8, False) == "CLEAR"              # streak continues
+    print("Isolated dips ignored; CLEAR confirmed only after 3 consecutive decreases.")
 
     print("\n=== Testing trend forecast ===")
     history = [2, 5, 9, 14, 20]  # blockage % over 5 readings

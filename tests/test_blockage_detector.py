@@ -170,6 +170,53 @@ def test_reference_height_tracker_never_rebaselines_on_rise():
     assert not tracker.decrease_detected
 
 
+def test_clear_filter_ignores_isolated_single_decreases():
+    """A single sudden decrease (sensor glitch) must never clear a live blockage."""
+    f = blockage_detector.ClearConfirmationFilter()
+    f.update(5.0, raw_blocked=True)   # blockage active
+    f.update(5.2, raw_blocked=True)
+    assert f.update(4.1, raw_blocked=False) == "BLOCKAGE DETECTED"  # dip #1 — ignored
+    f.update(5.3, raw_blocked=True)
+    assert f.update(4.2, raw_blocked=False) == "BLOCKAGE DETECTED"  # another isolated dip
+    assert f.update(5.4, raw_blocked=True) == "BLOCKAGE DETECTED"
+    assert f.blocked  # blockage latch is still held
+
+
+def test_clear_filter_confirms_after_3_consecutive_decreases():
+    """CLEAR requires 3 consecutive decreasing readings, even when the raw
+    pipeline already says clear."""
+    f = blockage_detector.ClearConfirmationFilter()
+    f.update(6.0, raw_blocked=True)   # blockage active
+    f.update(6.2, raw_blocked=True)
+    f.update(6.4, raw_blocked=True)
+    assert f.update(6.0, raw_blocked=False) == "BLOCKAGE DETECTED"  # decrease 1
+    assert f.update(5.5, raw_blocked=False) == "BLOCKAGE DETECTED"  # decrease 2
+    assert f.update(5.0, raw_blocked=False) == "CLEAR"              # decrease 3 -> confirmed
+    assert f.update(4.5, raw_blocked=False) == "CLEAR"              # streak continues
+    assert not f.blocked
+
+
+def test_clear_filter_streak_resets_on_rise():
+    """Any rise or plateau between dips resets the consecutive streak."""
+    f = blockage_detector.ClearConfirmationFilter()
+    f.update(6.0, raw_blocked=True)
+    f.update(5.5, raw_blocked=True)
+    f.update(5.0, raw_blocked=True)
+    assert f.update(5.2, raw_blocked=False) == "BLOCKAGE DETECTED"  # rise resets the streak
+    f.update(4.9, raw_blocked=False)   # 1st decrease after the reset
+    assert f.update(4.6, raw_blocked=False) == "BLOCKAGE DETECTED"  # only 2 so far
+    assert f.update(4.3, raw_blocked=False) == "CLEAR"              # 3rd consecutive
+
+
+def test_clear_filter_never_blocked_stays_clear():
+    """No blockage ever flagged: CLEAR verdicts pass straight through."""
+    f = blockage_detector.ClearConfirmationFilter()
+    assert f.update(3.0, raw_blocked=False) == "CLEAR"
+    assert f.update(2.8, raw_blocked=False) == "CLEAR"
+    assert f.update(3.1, raw_blocked=False) == "CLEAR"
+    assert not f.blocked
+
+
 if __name__ == "__main__":
     print("Running blockage_detector tests...")
     test_calibrate_cd()
@@ -201,5 +248,17 @@ if __name__ == "__main__":
 
     test_reference_height_tracker_never_rebaselines_on_rise()
     print("✓ test_reference_height_tracker_never_rebaselines_on_rise passed")
+
+    test_clear_filter_ignores_isolated_single_decreases()
+    print("✓ test_clear_filter_ignores_isolated_single_decreases passed")
+
+    test_clear_filter_confirms_after_3_consecutive_decreases()
+    print("✓ test_clear_filter_confirms_after_3_consecutive_decreases passed")
+
+    test_clear_filter_streak_resets_on_rise()
+    print("✓ test_clear_filter_streak_resets_on_rise passed")
+
+    test_clear_filter_never_blocked_stays_clear()
+    print("✓ test_clear_filter_never_blocked_stays_clear passed")
 
     print("\nAll tests passed!")

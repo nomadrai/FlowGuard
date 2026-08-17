@@ -26,6 +26,8 @@ from collections import deque
 import serial
 # pyrefly: ignore [missing-import]
 from blockage_detector import (
+    CLEAR_CONSECUTIVE_DECREASES,
+    ClearConfirmationFilter,
     ReferenceHeightTracker,
     blockage_percent,
     calculate_area,
@@ -120,8 +122,12 @@ def main():
     # Streaming state for the RATE-BASED verdict: the recent water-level
     # history (rise rates are computed over windows) and the reference-height
     # tracker (a falling level = the blockage has been cleared/opened).
+    # A ClearConfirmationFilter sits ABOVE everything: a single/isolated
+    # sudden decrease (sensor glitch) never clears a live blockage — CLEAR
+    # requires 3 consecutive decreasing readings.
     rate_history = deque(maxlen=RATE_HISTORY_LEN)
     ref_tracker = ReferenceHeightTracker()
+    clear_filter = ClearConfirmationFilter()
 
     while True:
         raw_line = ser.readline().decode("utf-8", errors="ignore")
@@ -142,6 +148,9 @@ def main():
         # RATE-BASED status: flag only unusual accelerations above the
         # learned normal rise rate; a falling level means the blockage
         # has been cleared. The absolute water level never decides this.
+        # The ClearConfirmationFilter sits ABOVE the rate verdict: an
+        # isolated/single sudden decrease is treated as sensor noise, and
+        # a live blockage is only cleared after 3 consecutive decreases.
         rate_history.append((t_ms / 1000.0, h))
         ref_tracker.update(h)
         verdict = detect_blockage_from_rise(
@@ -149,11 +158,19 @@ def main():
             times=[t for t, _ in rate_history],
         )
         falling = verdict["current_rate"] is not None and verdict["current_rate"] <= 0
-        if ref_tracker.decrease_detected or falling:
-            status = "CLEAR"
+        raw_blocked = verdict["verdict"] == "BLOCKAGE_DETECTED" and not (
+            ref_tracker.decrease_detected or falling
+        )
+        status = clear_filter.update(h, raw_blocked)
+        if status == "BLOCKAGE DETECTED" and not raw_blocked:
+            reason = (
+                f"decrease not confirmed — need {CLEAR_CONSECUTIVE_DECREASES} "
+                f"consecutive decreasing readings to declare clear (single "
+                f"drop treated as sensor noise)"
+            )
+        elif ref_tracker.decrease_detected or falling:
             reason = "water level decreasing — blockage has been cleared/opened"
         else:
-            status = "BLOCKAGE DETECTED" if verdict["verdict"] == "BLOCKAGE_DETECTED" else "CLEAR"
             reason = verdict["reason"]
 
         print(

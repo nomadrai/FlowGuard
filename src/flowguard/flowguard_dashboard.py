@@ -23,8 +23,10 @@ import streamlit as st
 
 # pyrefly: ignore [missing-import]
 from blockage_detector import (
+    CLEAR_CONSECUTIVE_DECREASES,
     RATE_RECENT_WINDOW,
     BlockageAnomalyDetector,
+    ClearConfirmationFilter,
     ReferenceHeightTracker,
     blockage_percent,
     calculate_area,
@@ -314,6 +316,7 @@ def _reader_loop():
     """Blocking serial loop: parse each line the instant it arrives and
     publish the verdict. Mirrors serial_reader.py's detection pipeline."""
     ref_tracker = ReferenceHeightTracker()
+    clear_filter = ClearConfirmationFilter()
     while not _stop_event.is_set():
         try:
             ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=0.5)
@@ -352,15 +355,19 @@ def _reader_loop():
                     [w for _, w in levels], times=[t for t, _ in levels]
                 )
                 falling = verdict["current_rate"] is not None and verdict["current_rate"] <= 0
-                if ref_tracker.decrease_detected or falling:
-                    status = "CLEAR"
+                raw_blocked = verdict["verdict"] == "BLOCKAGE_DETECTED" and not (
+                    ref_tracker.decrease_detected or falling
+                )
+                status = clear_filter.update(h, raw_blocked)
+                if status == "BLOCKAGE DETECTED" and not raw_blocked:
+                    reason = (
+                        f"decrease not confirmed — need {CLEAR_CONSECUTIVE_DECREASES} "
+                        f"consecutive decreasing readings to declare clear (single "
+                        f"drop treated as sensor noise)"
+                    )
+                elif ref_tracker.decrease_detected or falling:
                     reason = "water level decreasing — blockage has been cleared/opened"
                 else:
-                    status = (
-                        "BLOCKAGE DETECTED"
-                        if verdict["verdict"] == "BLOCKAGE_DETECTED"
-                        else "CLEAR"
-                    )
                     reason = verdict["reason"]
 
                 rowid = log_reading(NODE_NAME, h, DEFAULT_INFLOW_Q_CM3S, area, pct)
