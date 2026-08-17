@@ -24,16 +24,24 @@ import time
 from collections import deque
 
 import serial
-
+# pyrefly: ignore [missing-import]
 from blockage_detector import (
-    calculate_area, blockage_percent, detect_blockage_from_rise,
     ReferenceHeightTracker,
+    blockage_percent,
+    calculate_area,
+    detect_blockage_from_rise,
 )
-from storage import log_reading
+# pyrefly: ignore [missing-import]
 from config import (
-    SERIAL_PORT, SERIAL_BAUD, PIPE_AREA_CM2, CALIBRATED_CD,
-    DEFAULT_INFLOW_Q_CM3S, NODE_NAME,
+    CALIBRATED_CD,
+    DEFAULT_INFLOW_Q_CM3S,
+    NODE_NAME,
+    PIPE_AREA_CM2,
+    SERIAL_BAUD,
+    SERIAL_PORT,
 )
+# pyrefly: ignore [missing-import]
+from storage import log_reading
 
 RATE_HISTORY_LEN = 60  # readings kept in memory for rise-rate estimation
 
@@ -64,15 +72,50 @@ def parse_line(line):
     return t_ms, distance_cm, water_level_cm
 
 
+def format_status_line(
+    t_ms, distance_cm, water_level_cm, area, status, current_rate, baseline_rate, reason
+):
+    """
+    Format one reading exactly as the terminal prints it. Shared with the
+    dashboard so its live console shows byte-identical output.
+
+    Args:
+        t_ms: ESP32 timestamp in milliseconds
+        distance_cm: HC-SR04 distance reading
+        water_level_cm: water height in the inlet box
+        area: calculated effective pipe area (cm²), or None
+        status: "CLEAR" | "BLOCKAGE DETECTED"
+        current_rate: current rise rate (cm/s), or None
+        baseline_rate: learned normal rise rate (cm/s), or None
+        reason: why the verdict was chosen
+
+    Returns:
+        The single console line, e.g.:
+        [t=12345ms] distance=10.00cm | water=3.20cm | area=2.886cm^2 | CLEAR (rise  0.1234 vs baseline 0.0000 cm/s | reason)
+    """
+    area_str = f"{area:.3f}" if area is not None else "N/A"
+    cur_str = f"{current_rate:>7}" if current_rate is not None else "      —"
+    base_str = f"{baseline_rate:.4f}" if baseline_rate is not None else "—"
+    return (
+        f"[t={t_ms:.0f}ms] distance={distance_cm:.2f}cm | water={water_level_cm:.2f}cm | "
+        f"area={area_str}cm^2 | {status} "
+        f"(rise {cur_str} vs baseline {base_str} cm/s | {reason})"
+    )
+
+
 def main():
-    print(f"FlowGuard Live Monitor")
-    print(f"Pipe area: {PIPE_AREA_CM2:.4f} cm^2  |  Cd: {CALIBRATED_CD}  |  Assumed inflow: {DEFAULT_INFLOW_Q_CM3S} mL/s")
+    print("FlowGuard Live Monitor")
+    print(
+        f"Pipe area: {PIPE_AREA_CM2:.4f} cm^2  |  Cd: {CALIBRATED_CD}  |  Assumed inflow: {DEFAULT_INFLOW_Q_CM3S} mL/s"
+    )
     print(f"Connecting to {SERIAL_PORT} @ {SERIAL_BAUD} baud...")
 
     ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=2)
     time.sleep(2)  # let ESP32 reset after serial connect
     print("Connected. Reading live data — pour water and try blocking the pipe.\n")
-    print("Reminder: pour at roughly the rate set in config.py (DEFAULT_INFLOW_Q_CM3S) for accurate readings.\n")
+    print(
+        "Reminder: pour at roughly the rate set in config.py (DEFAULT_INFLOW_Q_CM3S) for accurate readings.\n"
+    )
 
     # Streaming state for the RATE-BASED verdict: the recent water-level
     # history (rise rates are computed over windows) and the reference-height
@@ -113,16 +156,18 @@ def main():
             status = "BLOCKAGE DETECTED" if verdict["verdict"] == "BLOCKAGE_DETECTED" else "CLEAR"
             reason = verdict["reason"]
 
-        cur = verdict["current_rate"]
-        base = verdict["baseline_rate"]
-        cur_str = f"{cur:>7}" if cur is not None else "      —"
-        base_str = f"{base:.4f}" if base is not None else "—"
-
-        area_str = f"{area:.3f}" if area is not None else "N/A"
-
-        print(f"[t={t_ms:.0f}ms] distance={distance_cm:.2f}cm | water={h:.2f}cm | "
-              f"area={area_str}cm^2 | {status} "
-              f"(rise {cur_str} vs baseline {base_str} cm/s | {reason})")
+        print(
+            format_status_line(
+                t_ms,
+                distance_cm,
+                h,
+                area,
+                status,
+                verdict["current_rate"],
+                verdict["baseline_rate"],
+                reason,
+            )
+        )
 
         # Log every reading — the dashboard reads the latest one on each auto-refresh
         log_reading(NODE_NAME, h, DEFAULT_INFLOW_Q_CM3S, area, pct)
