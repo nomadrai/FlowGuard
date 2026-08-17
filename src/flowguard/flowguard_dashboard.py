@@ -41,7 +41,7 @@ from config import (
     SERIAL_PORT,
 )
 from network_simulation import WaterNetwork, generate_rainfall_pulse
-from serial_reader import parse_line
+from serial_reader import format_status_line, parse_line
 from storage import (
     get_blockage_events,
     get_calibration_log,
@@ -177,6 +177,12 @@ div[data-testid="stSidebar"] hr { border-color: var(--border); }
 .fg-feed-line { display: flex; align-items: center; gap: 0.5rem; font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.05em; color: var(--text-mid); margin: 0.35rem 0 0.95rem; }
 .fg-feed-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px rgba(95, 174, 122, 0.7); animation: fg-pulse 2.4s ease-in-out infinite; }
 
+/* ---------- live serial console (serial_reader.py terminal view) ---------- */
+.fg-console { background: #07090D; border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem 1.05rem; font-family: var(--mono); font-size: 0.72rem; line-height: 1.75; color: var(--text-mid); overflow-x: auto; }
+.fg-console .line { white-space: pre; }
+.fg-console .line .ok { color: var(--green); }
+.fg-console .line .alert { color: var(--red); font-weight: 600; }
+
 /* ---------- notes / empty states ---------- */
 .fg-note { font-size: 0.78rem; color: var(--text-mid); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 0.8rem 1rem; line-height: 1.65; }
 .fg-note b { color: var(--text-hi); }
@@ -248,6 +254,8 @@ init_db()
 # ============================================================
 
 LIVE_HISTORY_LEN = 600  # readings kept in memory for the chart + ML/forecast
+LIVE_CONSOLE_LEN = 200  # console lines kept in memory (serial_reader.py format)
+LIVE_CONSOLE_SHOWN = 25  # most recent lines rendered in the console panel
 
 
 class LiveState:
@@ -258,6 +266,7 @@ class LiveState:
         self.history = deque(maxlen=LIVE_HISTORY_LEN)  # (t_sec, h) oldest -> newest
         self.levels = deque(maxlen=LIVE_HISTORY_LEN)  # water level, oldest -> newest
         self.pcts = deque(maxlen=LIVE_HISTORY_LEN)  # blockage %, oldest -> newest
+        self.console = deque(maxlen=LIVE_CONSOLE_LEN)  # (line, status), oldest -> newest
         self.latest = None  # dict: height/area/pct/verdict snapshot
         self.connected = None  # None = starting, True/False = port state
         self.error = None
@@ -271,6 +280,7 @@ class LiveState:
                 "latest": dict(self.latest) if self.latest else None,
                 "levels": list(self.levels),
                 "pcts": list(self.pcts),
+                "console": list(self.console),
                 "connected": self.connected,
                 "error": self.error,
                 "count": self.count,
@@ -340,12 +350,24 @@ def _reader_loop():
                     reason = verdict["reason"]
 
                 rowid = log_reading(NODE_NAME, h, DEFAULT_INFLOW_Q_CM3S, area, pct)
+                line = format_status_line(
+                    t_ms,
+                    distance_cm,
+                    h,
+                    area,
+                    status,
+                    verdict["current_rate"],
+                    verdict["baseline_rate"],
+                    reason,
+                )
                 with _live_state.lock:
+                    _live_state.console.append((line, status))
                     _live_state.latest = {
                         "height": h,
                         "area": area,
                         "pct": pct,
                         "blocked": status == "BLOCKAGE DETECTED",
+                        "status": status,
                         "rise_rate": verdict["current_rate"],
                         "baseline_rate": verdict["baseline_rate"],
                         "verdict_reason": reason,
@@ -583,6 +605,51 @@ def render_empty_state(live=True):
         """,
             unsafe_allow_html=True,
         )
+
+
+def render_console(lines):
+    """
+    Terminal-style panel showing the last readings exactly as
+    serial_reader.py prints them (status token colourised for readability).
+    lines: list of (formatted_line, status), oldest -> newest.
+    """
+    if not lines:
+        st.markdown(
+            """
+        <div class="fg-note">Console is empty — switch to Live mode and pour water to see the serial feed
+        here exactly as <span class="mono">serial_reader.py</span> prints it.</div>
+        """,
+            unsafe_allow_html=True,
+        )
+        return
+    body = ""
+    for line, status in lines[-LIVE_CONSOLE_SHOWN:]:
+        cls = "alert" if status == "BLOCKAGE DETECTED" else "ok"
+        colored = line.replace(status, f'<span class="{cls}">{status}</span>')
+        body += f'<div class="line">{colored}</div>'
+    st.markdown(f'<div class="fg-console">{body}</div>', unsafe_allow_html=True)
+
+
+@st.fragment(run_every=0.5)
+def live_console():
+    """Repaints the serial_reader.py-style console from the in-memory log."""
+    snap = _live_state.snapshot()
+    if snap["connected"] is True:
+        conn_state = "CONNECTED"
+    elif snap["connected"] is None:
+        conn_state = "CONNECTING"
+    else:
+        conn_state = "RECONNECTING"
+    st.markdown(
+        f"""
+    <div class="fg-feed-line">
+        <span class="fg-feed-dot"></span>
+        {snap["count"]} READINGS RECEIVED &nbsp;&middot;&nbsp; SHOWING LAST {min(len(snap["console"]), LIVE_CONSOLE_SHOWN)} LINES &nbsp;&middot;&nbsp; {conn_state}
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
+    render_console(snap["console"])
 
 
 # ============================================================
@@ -1067,6 +1134,26 @@ with tabs[3]:
             "text/csv",
             key="dl_net",
         )
+
+# ============================================================
+# SECTION 4 — Live Serial Console (serial_reader.py terminal view)
+# ============================================================
+render_panel_head(
+    "Live Serial Console",
+    "SERIAL FEED",
+    "Every reading exactly as serial_reader.py prints it — timestamp, distance, water level, effective area, and the rate-based verdict",
+)
+
+if live_mode:
+    live_console()
+else:
+    st.markdown(
+        """
+    <div class="fg-note">Manual mode — switch to <b>Live mode</b> (sidebar) to stream the
+    <span class="mono">serial_reader.py</span> console here in real time.</div>
+    """,
+        unsafe_allow_html=True,
+    )
 
 # ============================================================
 # FOOTER
