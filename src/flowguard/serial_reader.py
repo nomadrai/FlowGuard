@@ -25,11 +25,14 @@ from collections import deque
 
 import serial
 
+# pyrefly: ignore [missing-import]
 from blockage_detector import (
     calculate_area, blockage_percent, detect_blockage_from_rise,
     ReferenceHeightTracker,
 )
+# pyrefly: ignore [missing-import]
 from storage import log_reading
+# pyrefly: ignore [missing-import]
 from config import (
     SERIAL_PORT, SERIAL_BAUD, PIPE_AREA_CM2, CALIBRATED_CD,
     DEFAULT_INFLOW_Q_CM3S, NODE_NAME,

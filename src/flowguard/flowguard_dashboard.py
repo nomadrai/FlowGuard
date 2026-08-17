@@ -10,17 +10,21 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+# pyrefly: ignore [missing-import]
 from blockage_detector import (
     calibrate_cd, calculate_area, blockage_percent,
     extract_rate_features,
     BlockageAnomalyDetector, forecast_days_to_critical,
     detect_blockage_from_rise, RATE_RECENT_WINDOW,
 )
+# pyrefly: ignore [missing-import]
 from network_simulation import WaterNetwork, generate_rainfall_pulse
+# pyrefly: ignore [missing-import]
 from storage import (
     init_db, log_calibration, log_reading, log_blockage_event, log_network_run,
     get_calibration_log, get_readings, get_blockage_events, get_network_runs,
 )
+# pyrefly: ignore [missing-import]
 from config import (
     PIPE_AREA_CM2, INLET_BOX_BASE_AREA_CM2, CALIBRATED_CD,
     DEFAULT_INFLOW_Q_CM3S, NODE_NAME,
