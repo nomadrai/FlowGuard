@@ -24,12 +24,14 @@ import time
 from collections import deque
 
 import serial
+# pyrefly: ignore [missing-import]
 from blockage_detector import (
     ReferenceHeightTracker,
     blockage_percent,
     calculate_area,
     detect_blockage_from_rise,
 )
+# pyrefly: ignore [missing-import]
 from config import (
     CALIBRATED_CD,
     DEFAULT_INFLOW_Q_CM3S,
@@ -38,6 +40,7 @@ from config import (
     SERIAL_BAUD,
     SERIAL_PORT,
 )
+# pyrefly: ignore [missing-import]
 from storage import log_reading
 
 RATE_HISTORY_LEN = 60  # readings kept in memory for rise-rate estimation
